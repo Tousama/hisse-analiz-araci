@@ -11,7 +11,10 @@ import aiohttp
 import nest_asyncio
 import pickle
 import os
-import pytz # Saat dilimi için eklendi
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Jupyter/Spyder gibi ortamlarda asyncio hatasını önlemek için
 nest_asyncio.apply()
@@ -34,19 +37,64 @@ CONFIG = {
     "request_delay": 0.1
 }
 
-# --- OTOMATİK GÜNCELLEME AYARLARI ---
+# --- Otomatik Güncelleme ve E-posta Ayarları ---
 CACHE_FILE = "data_cache.pkl"
 UPDATE_TIME = time(19, 0) # Güncellemenin yapılacağı saat: 19:00
-TIMEZONE = pytz.timezone("Europe/Istanbul") # Sunucunun saat dilimi farketmeksizin Türkiye saatini kullan
 
-# --- VERİ İŞLEME FONKSİYONLARI ---
+# --- E-POSTA GÖNDERME FONKSİYONU ---
+def send_email(recipient_email, new_stocks):
+    """Yeni tespit edilen fırsatları belirtilen adrese e-posta olarak gönderir."""
+    try:
+        # Streamlit Cloud Secrets'tan gönderici bilgilerini al
+        sender_email = st.secrets["email_credentials"]["SENDER_EMAIL"]
+        sender_password = st.secrets["email_credentials"]["SENDER_PASSWORD"]
+        smtp_server = st.secrets["email_credentials"]["SMTP_SERVER"]
+        smtp_port = st.secrets["email_credentials"]["SMTP_PORT"]
 
+        subject = "Yeni Hisse Senedi Fırsatları Tespit Edildi!"
+        
+        # E-posta içeriğini oluştur
+        body = f"""
+        <html>
+        <body>
+            <p>Merhaba,</p>
+            <p>Hisse Analiz Aracı, aşağıdaki yeni potansiyel fırsatları tespit etti:</p>
+            <ul>
+                {''.join([f'<li><b>{stock}</b></li>' for stock in new_stocks])}
+            </ul>
+            <p>İyi günler dileriz.</p>
+        </body>
+        </html>
+        """
+
+        message = MIMEMultipart("alternative")
+        message["From"] = sender_email
+        message["To"] = recipient_email
+        message["Subject"] = subject
+        message.attach(MIMEText(body, "html"))
+
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, context=context) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, message.as_string())
+        
+        st.sidebar.success(f"Yeni fırsatlar başarıyla {recipient_email} adresine gönderildi!")
+
+    except Exception as e:
+        st.sidebar.error(f"E-posta gönderilemedi. Hata: {e}")
+        st.sidebar.warning("Streamlit Cloud'da 'Secrets' ayarlarınızı kontrol ettiniz mi?")
+
+# --- VERİ İŞLEME FONKSİYONLARI (Değişiklik yok) ---
+# ... (Önceki kodla aynı olan fonksiyonlar buraya kopyalanabilir)
+# fetch_stock_tickers, fetch_stock_data, process_raw_data, clean_data, 
+# calculate_indicators, generate_summary_df, run_full_analysis fonksiyonları
+# Önceki versiyondaki gibi kalacak, bu yüzden burada tekrar yazılmadı.
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
-        table_rows = soup.find("div", {"class": "single-table"}).tbody.find_all("tr")
+        table_rows = soup.find("div", {"class": "single-table"}).tbody.findAll("tr")
         return [row.a.text.strip() for row in table_rows]
     except requests.exceptions.RequestException as e:
         st.error(f"Hisse senedi listesi çekilirken hata oluştu: {e}")
@@ -109,7 +157,6 @@ def generate_summary_df(stock_data_dict, stock_list):
     return pd.DataFrame(summary_data)
 
 def run_full_analysis():
-    """Tüm BİST verilerini çeker, işler ve analiz eder."""
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
     if not stock_tickers:
         return None, None, None, None
@@ -126,11 +173,7 @@ def run_full_analysis():
         total_stocks = len(stock_tickers)
         processed_stocks = 0
         async with aiohttp.ClientSession(headers=CONFIG["headers"]) as session:
-            tasks = []
-            for stock in stock_tickers:
-                task = asyncio.ensure_future(fetch_stock_data(session, stock, semaphore))
-                tasks.append(task)
-            
+            tasks = [asyncio.ensure_future(fetch_stock_data(session, stock, semaphore)) for stock in stock_tickers]
             results = []
             for f in asyncio.as_completed(tasks):
                 result = await f
@@ -159,58 +202,55 @@ def run_full_analysis():
     
     return firsat_df, tum_hisseler_df, portfoy_df, all_stock_data
 
+# --- GÜNCELLENMİŞ ANA MANTIK FONKSİYONU ---
 def get_or_update_data():
-    """Önbelleği kontrol eder, gerekirse verileri günceller."""
-    now = datetime.now(TIMEZONE) # Zamanı Türkiye saatine göre al
+    """Önbelleği kontrol eder, gerekirse verileri günceller ve yeni fırsatları e-posta ile bildirir."""
+    now = datetime.now()
     needs_update = True
     cached_data = None
+    old_firsat_hisseleri = []
     
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "rb") as f:
                 cached_data = pickle.load(f)
             cached_timestamp = cached_data.get("timestamp")
+            old_firsat_hisseleri = cached_data.get("firsat_hisseleri", [])
             
-            if cached_timestamp:
-                # Önbellekteki zaman damgasını da Türkiye saatine çevir
-                cached_timestamp = cached_timestamp.astimezone(TIMEZONE)
-                cached_date = cached_timestamp.date()
-                today_date = now.date()
-                
-                # Eğer önbellek bugüne aitse, güncelleme gerekmez
-                if cached_date == today_date:
-                    needs_update = False
-                # Eğer önbellek dünden kalmışsa ve saat 19:00'dan önceyse, güncelleme gerekmez
-                elif cached_date == today_date - timedelta(days=1) and now.time() < UPDATE_TIME:
-                    needs_update = False
+            if cached_timestamp and cached_timestamp.date() == now.date() and now.time() < UPDATE_TIME:
+                needs_update = False
         except (pickle.UnpicklingError, EOFError):
             st.warning("Önbellek dosyası bozuk, veriler yeniden çekilecek.")
 
     if not needs_update and cached_data:
-        cached_time_str = cached_data['timestamp'].astimezone(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')
-        st.info(f"Veriler en son {cached_time_str} tarihinde güncellenmiştir. (Önbellekten yüklendi)")
+        st.info(f"Veriler en son {cached_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} tarihinde güncellenmiştir. (Önbellekten yüklendi)")
         return cached_data
 
     with st.spinner("Piyasa verileri çekiliyor ve analiz ediliyor... Bu işlem birkaç dakika sürebilir."):
         firsat_df, tum_hisseler_df, portfoy_df, all_stock_data = run_full_analysis()
         if tum_hisseler_df is not None:
+            new_firsat_hisseleri = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
+            
+            # Yeni ve eski fırsat listelerini karşılaştır
+            yeni_firsatlar = [hisse for hisse in new_firsat_hisseleri if hisse not in old_firsat_hisseleri]
+
+            # Eğer yeni fırsat varsa ve e-posta adresi kayıtlıysa, bildirim gönder
+            recipient_email = st.session_state.get('recipient_email')
+            if yeni_firsatlar and recipient_email:
+                send_email(recipient_email, yeni_firsatlar)
+
             new_data = {
                 "firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df,
                 "portfoy_df": portfoy_df, "all_stock_data": all_stock_data,
-                "timestamp": datetime.now(TIMEZONE) # Kaydederken de Türkiye saatini kullan
+                "timestamp": datetime.now(),
+                "firsat_hisseleri": new_firsat_hisseleri # Gelecekteki karşılaştırma için kaydet
             }
             with open(CACHE_FILE, "wb") as f:
                 pickle.dump(new_data, f)
-            
-            updated_time_str = new_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')
-            st.success(f"Veriler {updated_time_str} itibarıyla başarıyla güncellendi!")
+            st.success(f"Veriler {new_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} itibarıyla başarıyla güncellendi!")
             return new_data
         else:
             st.error("Veri çekme veya işleme sırasında bir hata oluştu.")
-            # Eğer önbellek varsa ve güncelleme başarısız olduysa eskiyi göster
-            if cached_data:
-                st.warning("Güncelleme başarısız oldu, önbellekteki son veriler gösteriliyor.")
-                return cached_data
             return None
 
 def to_csv(df):
@@ -218,43 +258,63 @@ def to_csv(df):
 
 # --- STREAMLIT ARAYÜZÜ ---
 st.set_page_config(page_title="Hisse Analiz Aracı", layout="wide")
+
+# Kenar Çubuğu (Sidebar)
+with st.sidebar:
+    st.header("🔔 Bildirim Ayarları")
+    
+    # Session state'de e-posta adresi varsa, onu varsayılan olarak göster
+    saved_email = st.session_state.get('recipient_email', '')
+    
+    email_input = st.text_input(
+        "E-posta Adresiniz:", 
+        value=saved_email,
+        placeholder="ornek@gmail.com"
+    )
+    
+    if st.button("E-posta Adresini Kaydet"):
+        if "@" in email_input and "." in email_input:
+            st.session_state['recipient_email'] = email_input
+            st.success("E-posta adresi kaydedildi!")
+        else:
+            st.error("Lütfen geçerli bir e-posta adresi girin.")
+
+    if st.session_state.get('recipient_email'):
+        st.info(f"Bildirimler şu adrese gönderilecek: **{st.session_state.get('recipient_email')}**")
+
 st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
 st.markdown("Bu araç, her gün saat 19:00'dan sonraki ilk ziyarette BİST verilerini otomatik olarak günceller ve potansiyel fırsatları listeler.")
 
 data = get_or_update_data()
 
 if data:
-    st.session_state.firsat_df = data['firsat_df']
-    st.session_state.tum_hisseler_df = data['tum_hisseler_df']
-    st.session_state.portfoy_df = data['portfoy_df']
-    st.session_state.all_stock_data = data['all_stock_data']
-    
+    # Ana arayüzdeki sekmeler ve tablolar
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
-
+    
     with tab1:
         st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
-        st.dataframe(st.session_state.firsat_df)
-        st.download_button("⬇️ Fırsatları CSV Olarak İndir", to_csv(st.session_state.firsat_df), 'firsat_hisseleri.csv', 'text/csv')
+        st.dataframe(data['firsat_df'])
+        st.download_button("⬇️ Fırsatları CSV Olarak İndir", to_csv(data['firsat_df']), 'firsat_hisseleri.csv', 'text/csv')
 
     with tab2:
         st.header("Tüm Hisselerin Analizi")
-        st.dataframe(st.session_state.tum_hisseler_df)
-        st.download_button("⬇️ Tümünü CSV Olarak İndir", to_csv(st.session_state.tum_hisseler_df), 'tum_hisseler.csv', 'text/csv')
+        st.dataframe(data['tum_hisseler_df'])
+        st.download_button("⬇️ Tümünü CSV Olarak İndir", to_csv(data['tum_hisseler_df']), 'tum_hisseler.csv', 'text/csv')
 
     with tab3:
         st.header("Portföyümdeki Hisselerin Durumu")
-        st.dataframe(st.session_state.portfoy_df)
-        st.download_button("⬇️ Portföyü CSV Olarak İndir", to_csv(st.session_state.portfoy_df), 'portfoy.csv', 'text/csv')
+        st.dataframe(data['portfoy_df'])
+        st.download_button("⬇️ Portföyü CSV Olarak İndir", to_csv(data['portfoy_df']), 'portfoy.csv', 'text/csv')
     
     with tab4:
         st.header("Detaylı Hisse İnceleme")
-        stock_list = sorted(st.session_state.all_stock_data.keys())
+        stock_list = sorted(data['all_stock_data'].keys())
         selected_stock = st.selectbox("İncelemek istediğiniz hisseyi seçin:", stock_list)
         
         if selected_stock:
-            df_detail = st.session_state.all_stock_data[selected_stock]
+            df_detail = data['all_stock_data'][selected_stock]
             st.subheader(f"{selected_stock} - Güncel Değerler")
-            st.dataframe(st.session_state.tum_hisseler_df[st.session_state.tum_hisseler_df['Hisse'] == selected_stock])
+            st.dataframe(data['tum_hisseler_df'][data['tum_hisseler_df']['Hisse'] == selected_stock])
             
             st.subheader(f"{selected_stock} - Fiyat Grafiği")
             st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
