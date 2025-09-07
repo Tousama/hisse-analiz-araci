@@ -39,56 +39,66 @@ CONFIG = {
 
 # --- Otomatik Güncelleme ve E-posta Ayarları ---
 CACHE_FILE = "data_cache.pkl"
-UPDATE_TIME = time(19, 0) # Güncellemenin yapılacağı saat: 19:00
+SUBSCRIBERS_FILE = "subscribers.txt" # Abone listesini tutacak dosya
+UPDATE_TIME = time(19, 0)
+
+# --- Abone Yönetimi Fonksiyonları ---
+def get_subscribers():
+    """Abone listesini dosyadan okur."""
+    if not os.path.exists(SUBSCRIBERS_FILE):
+        return []
+    try:
+        with open(SUBSCRIBERS_FILE, "r") as f:
+            return [line.strip() for line in f if "@" in line.strip()]
+    except Exception:
+        return []
+
+def add_subscriber(email):
+    """Listeye yeni bir abone ekler."""
+    subscribers = get_subscribers()
+    if email not in subscribers:
+        with open(SUBSCRIBERS_FILE, "a") as f:
+            f.write(email + "\n")
+        return True
+    return False
+
+def remove_subscriber(email):
+    """Listeden bir aboneyi çıkarır."""
+    subscribers = get_subscribers()
+    if email in subscribers:
+        subscribers.remove(email)
+        with open(SUBSCRIBERS_FILE, "w") as f:
+            for sub in subscribers:
+                f.write(sub + "\n")
+        return True
+    return False
 
 # --- E-POSTA GÖNDERME FONKSİYONU ---
-def send_email(recipient_email, new_stocks):
-    """Yeni tespit edilen fırsatları belirtilen adrese e-posta olarak gönderir."""
+def send_email(recipient_email, new_stocks_html):
+    """Tek bir alıcıya e-posta gönderir."""
     try:
-        # Streamlit Cloud Secrets'tan gönderici bilgilerini al
         sender_email = st.secrets["email_credentials"]["SENDER_EMAIL"]
         sender_password = st.secrets["email_credentials"]["SENDER_PASSWORD"]
         smtp_server = st.secrets["email_credentials"]["SMTP_SERVER"]
         smtp_port = st.secrets["email_credentials"]["SMTP_PORT"]
 
-        subject = "Yeni Hisse Senedi Fırsatları Tespit Edildi!"
-        
-        # E-posta içeriğini oluştur
-        body = f"""
-        <html>
-        <body>
-            <p>Merhaba,</p>
-            <p>Hisse Analiz Aracı, aşağıdaki yeni potansiyel fırsatları tespit etti:</p>
-            <ul>
-                {''.join([f'<li><b>{stock}</b></li>' for stock in new_stocks])}
-            </ul>
-            <p>İyi günler dileriz.</p>
-        </body>
-        </html>
-        """
-
         message = MIMEMultipart("alternative")
         message["From"] = sender_email
         message["To"] = recipient_email
-        message["Subject"] = subject
-        message.attach(MIMEText(body, "html"))
+        message["Subject"] = "Yeni Hisse Senedi Fırsatları Tespit Edildi!"
+        message.attach(MIMEText(new_stocks_html, "html"))
 
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(smtp_server, smtp_port, context=context) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, recipient_email, message.as_string())
-        
-        st.sidebar.success(f"Yeni fırsatlar başarıyla {recipient_email} adresine gönderildi!")
-
+        return True
     except Exception as e:
-        st.sidebar.error(f"E-posta gönderilemedi. Hata: {e}")
-        st.sidebar.warning("Streamlit Cloud'da 'Secrets' ayarlarınızı kontrol ettiniz mi?")
+        # Hata loglaması sadece konsola yapılır, arayüzü kirletmez.
+        print(f"E-posta gönderim hatası ({recipient_email}): {e}")
+        return False
 
 # --- VERİ İŞLEME FONKSİYONLARI (Değişiklik yok) ---
-# ... (Önceki kodla aynı olan fonksiyonlar buraya kopyalanabilir)
-# fetch_stock_tickers, fetch_stock_data, process_raw_data, clean_data, 
-# calculate_indicators, generate_summary_df, run_full_analysis fonksiyonları
-# Önceki versiyondaki gibi kalacak, bu yüzden burada tekrar yazılmadı.
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
@@ -156,6 +166,7 @@ def generate_summary_df(stock_data_dict, stock_list):
             })
     return pd.DataFrame(summary_data)
 
+@st.cache_data(show_spinner=False, ttl=3600)
 def run_full_analysis():
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
     if not stock_tickers:
@@ -202,9 +213,8 @@ def run_full_analysis():
     
     return firsat_df, tum_hisseler_df, portfoy_df, all_stock_data
 
-# --- GÜNCELLENMİŞ ANA MANTIK FONKSİYONU ---
+# --- ANA MANTIK FONKSİYONU ---
 def get_or_update_data():
-    """Önbelleği kontrol eder, gerekirse verileri günceller ve yeni fırsatları e-posta ile bildirir."""
     now = datetime.now()
     needs_update = True
     cached_data = None
@@ -223,27 +233,35 @@ def get_or_update_data():
             st.warning("Önbellek dosyası bozuk, veriler yeniden çekilecek.")
 
     if not needs_update and cached_data:
-        st.info(f"Veriler en son {cached_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} tarihinde güncellenmiştir. (Önbellekten yüklendi)")
+        st.info(f"Veriler en son {cached_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} tarihinde güncellenmiştir.")
         return cached_data
 
-    with st.spinner("Piyasa verileri çekiliyor ve analiz ediliyor... Bu işlem birkaç dakika sürebilir."):
+    with st.spinner("Piyasa verileri çekiliyor ve analiz ediliyor..."):
         firsat_df, tum_hisseler_df, portfoy_df, all_stock_data = run_full_analysis()
         if tum_hisseler_df is not None:
             new_firsat_hisseleri = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-            
-            # Yeni ve eski fırsat listelerini karşılaştır
             yeni_firsatlar = [hisse for hisse in new_firsat_hisseleri if hisse not in old_firsat_hisseleri]
 
-            # Eğer yeni fırsat varsa ve e-posta adresi kayıtlıysa, bildirim gönder
-            recipient_email = st.session_state.get('recipient_email')
-            if yeni_firsatlar and recipient_email:
-                send_email(recipient_email, yeni_firsatlar)
+            subscribers = get_subscribers()
+            if yeni_firsatlar and subscribers:
+                st.sidebar.info("Yeni fırsatlar bulundu! E-postalar gönderiliyor...")
+                
+                email_body_html = f"""
+                <html><body><p>Merhaba,</p><p>Hisse Analiz Aracı, aşağıdaki yeni potansiyel fırsatları tespit etti:</p>
+                <ul>{''.join([f'<li><b>{stock}</b></li>' for stock in yeni_firsatlar])}</ul>
+                <p>İyi günler dileriz.</p></body></html>
+                """
+                
+                success_count = 0
+                for sub in subscribers:
+                    if send_email(sub, email_body_html):
+                        success_count += 1
+                st.sidebar.success(f"{success_count}/{len(subscribers)} aboneye bildirim gönderildi.")
 
             new_data = {
                 "firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df,
                 "portfoy_df": portfoy_df, "all_stock_data": all_stock_data,
-                "timestamp": datetime.now(),
-                "firsat_hisseleri": new_firsat_hisseleri # Gelecekteki karşılaştırma için kaydet
+                "timestamp": datetime.now(), "firsat_hisseleri": new_firsat_hisseleri
             }
             with open(CACHE_FILE, "wb") as f:
                 pickle.dump(new_data, f)
@@ -259,36 +277,40 @@ def to_csv(df):
 # --- STREAMLIT ARAYÜZÜ ---
 st.set_page_config(page_title="Hisse Analiz Aracı", layout="wide")
 
-# Kenar Çubuğu (Sidebar)
 with st.sidebar:
-    st.header("🔔 Bildirim Ayarları")
+    st.header("🔔 E-posta Aboneliği")
+    email_input = st.text_input("E-posta Adresiniz:", placeholder="ornek@gmail.com")
     
-    # Session state'de e-posta adresi varsa, onu varsayılan olarak göster
-    saved_email = st.session_state.get('recipient_email', '')
-    
-    email_input = st.text_input(
-        "E-posta Adresiniz:", 
-        value=saved_email,
-        placeholder="ornek@gmail.com"
-    )
-    
-    if st.button("E-posta Adresini Kaydet"):
-        if "@" in email_input and "." in email_input:
-            st.session_state['recipient_email'] = email_input
-            st.success("E-posta adresi kaydedildi!")
-        else:
-            st.error("Lütfen geçerli bir e-posta adresi girin.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Abone Ol"):
+            if "@" in email_input and "." in email_input:
+                if add_subscriber(email_input):
+                    st.success(f"{email_input} abone listesine eklendi!")
+                else:
+                    st.warning("Bu e-posta adresi zaten listede.")
+            else:
+                st.error("Lütfen geçerli bir e-posta adresi girin.")
+    with col2:
+        if st.button("Abonelikten Çık"):
+            if "@" in email_input and "." in email_input:
+                if remove_subscriber(email_input):
+                    st.success(f"{email_input} listeden çıkarıldı.")
+                else:
+                    st.warning("Bu e-posta adresi listede bulunamadı.")
+            else:
+                st.error("Lütfen geçerli bir e-posta adresi girin.")
 
-    if st.session_state.get('recipient_email'):
-        st.info(f"Bildirimler şu adrese gönderilecek: **{st.session_state.get('recipient_email')}**")
+    st.subheader("Mevcut Aboneler")
+    st.dataframe(pd.DataFrame(get_subscribers(), columns=["E-posta Adresleri"]), use_container_width=True)
+
 
 st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
-st.markdown("Bu araç, her gün saat 19:00'dan sonraki ilk ziyarette BİST verilerini otomatik olarak günceller ve potansiyel fırsatları listeler.")
+st.markdown("Bu araç, her gün saat 19:00'dan sonraki ilk ziyarette BİST verilerini otomatik olarak günceller ve tüm abonelere yeni fırsatları e-posta ile bildirir.")
 
 data = get_or_update_data()
 
 if data:
-    # Ana arayüzdeki sekmeler ve tablolar
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
     
     with tab1:
