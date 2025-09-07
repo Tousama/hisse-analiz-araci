@@ -301,8 +301,7 @@ with st.sidebar:
             else:
                 st.error("Lütfen geçerli bir e-posta adresi girin.")
 
-    st.subheader("Mevcut Aboneler")
-    st.dataframe(pd.DataFrame(get_subscribers(), columns=["E-posta Adresleri"]), use_container_width=True)
+    # --- GİZLİLİK GÜNCELLEMESİ: Abone listesi artık arayüzde gösterilmiyor. ---
 
 
 st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
