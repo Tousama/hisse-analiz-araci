@@ -15,6 +15,7 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import pytz # Saat dilimi için yeni kütüphane
 
 # Jupyter/Spyder gibi ortamlarda asyncio hatasını önlemek için
 nest_asyncio.apply()
@@ -39,12 +40,12 @@ CONFIG = {
 
 # --- Otomatik Güncelleme ve E-posta Ayarları ---
 CACHE_FILE = "data_cache.pkl"
-SUBSCRIBERS_FILE = "subscribers.txt" # Abone listesini tutacak dosya
+SUBSCRIBERS_FILE = "subscribers.txt"
 UPDATE_TIME = time(19, 0)
+TIMEZONE = pytz.timezone("Europe/Istanbul") # Türkiye saat dilimi
 
 # --- Abone Yönetimi Fonksiyonları ---
 def get_subscribers():
-    """Abone listesini dosyadan okur."""
     if not os.path.exists(SUBSCRIBERS_FILE):
         return []
     try:
@@ -54,7 +55,6 @@ def get_subscribers():
         return []
 
 def add_subscriber(email):
-    """Listeye yeni bir abone ekler."""
     subscribers = get_subscribers()
     if email not in subscribers:
         with open(SUBSCRIBERS_FILE, "a") as f:
@@ -63,7 +63,6 @@ def add_subscriber(email):
     return False
 
 def remove_subscriber(email):
-    """Listeden bir aboneyi çıkarır."""
     subscribers = get_subscribers()
     if email in subscribers:
         subscribers.remove(email)
@@ -75,7 +74,6 @@ def remove_subscriber(email):
 
 # --- E-POSTA GÖNDERME FONKSİYONU ---
 def send_email(recipient_email, new_stocks_html):
-    """Tek bir alıcıya e-posta gönderir."""
     try:
         sender_email = st.secrets["email_credentials"]["SENDER_EMAIL"]
         sender_password = st.secrets["email_credentials"]["SENDER_PASSWORD"]
@@ -94,11 +92,11 @@ def send_email(recipient_email, new_stocks_html):
             server.sendmail(sender_email, recipient_email, message.as_string())
         return True
     except Exception as e:
-        # Hata loglaması sadece konsola yapılır, arayüzü kirletmez.
         print(f"E-posta gönderim hatası ({recipient_email}): {e}")
         return False
 
 # --- VERİ İŞLEME FONKSİYONLARI (Değişiklik yok) ---
+# ... (Önceki kodla aynı olan fonksiyonlar) ...
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
@@ -109,7 +107,6 @@ def fetch_stock_tickers(url, headers):
     except requests.exceptions.RequestException as e:
         st.error(f"Hisse senedi listesi çekilirken hata oluştu: {e}")
         return []
-
 async def fetch_stock_data(session, stock_code, semaphore):
     url = CONFIG["data_url_template"].format(
         from_date=CONFIG["start_date"],
@@ -125,19 +122,16 @@ async def fetch_stock_data(session, stock_code, semaphore):
                 return stock_code, data.get("data", [])
         except Exception:
             return stock_code, None
-
 def process_raw_data(raw_data):
     if not raw_data: return pd.DataFrame()
     dates = pd.to_datetime([item[0] for item in raw_data], unit='ms')
     prices = [item[1] for item in raw_data]
     return pd.DataFrame({"Tarih": dates, "Fiyat": prices})
-
 def clean_data(df):
     if len(df) > CONFIG["max_data_rows"]:
         df = df.iloc[-CONFIG["max_data_rows"]:].reset_index(drop=True)
     df['Fiyat'] = df['Fiyat'].replace(0, np.nan).replace(0.0001, np.nan).ffill().bfill()
     return df
-
 def calculate_indicators(df):
     if 'Fiyat' not in df.columns or df['Fiyat'].isnull().all() or len(df) < CONFIG["ema_period"]:
         return df
@@ -148,7 +142,6 @@ def calculate_indicators(df):
     df["muhind"] = df["p/ema200"] / df["ema200ort"]
     df['Degisim'] = round((df['Fiyat'] / df['Fiyat'].shift(1) - 1) * 100, 2)
     return df
-
 def generate_summary_df(stock_data_dict, stock_list):
     summary_data = []
     for stock in stock_list:
@@ -165,24 +158,19 @@ def generate_summary_df(stock_data_dict, stock_list):
                 "HighestMuhind": df['muhind'].iloc[-lookback_period:].max()
             })
     return pd.DataFrame(summary_data)
-
 @st.cache_data(show_spinner=False, ttl=3600)
 def run_full_analysis():
+    # ... (run_full_analysis fonksiyonunun içi aynı) ...
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
-    if not stock_tickers:
-        return None, None, None, None
-
+    if not stock_tickers: return None, None, None, None
     all_stock_data = {}
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     progress_bar_container = st.empty()
     progress_bar_container.progress(0, text="Hisse verileri çekiliyor...")
-
     async def run_fetch():
         semaphore = asyncio.Semaphore(CONFIG["concurrent_requests"])
-        total_stocks = len(stock_tickers)
-        processed_stocks = 0
+        total_stocks, processed_stocks = len(stock_tickers), 0
         async with aiohttp.ClientSession(headers=CONFIG["headers"]) as session:
             tasks = [asyncio.ensure_future(fetch_stock_data(session, stock, semaphore)) for stock in stock_tickers]
             results = []
@@ -192,30 +180,24 @@ def run_full_analysis():
                 processed_stocks += 1
                 progress_bar_container.progress(processed_stocks / total_stocks, text=f"Hisse verileri çekiliyor... ({processed_stocks}/{total_stocks})")
             return results
-
     results = loop.run_until_complete(run_fetch())
     progress_bar_container.empty()
-
     for stock_code, raw_data in results:
         if raw_data:
             df = process_raw_data(raw_data)
             df = clean_data(df)
             df = calculate_indicators(df)
             all_stock_data[stock_code] = df
-
-    firsat_stocks = [
-        stock for stock, df in all_stock_data.items()
-        if not df.empty and "muhind" in df.columns and df.iloc[-1]["muhind"] < CONFIG["muhind_filter_value"]
-    ]
+    firsat_stocks = [ stock for stock, df in all_stock_data.items() if not df.empty and "muhind" in df.columns and df.iloc[-1]["muhind"] < CONFIG["muhind_filter_value"] ]
     firsat_df = generate_summary_df(all_stock_data, firsat_stocks)
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
-    
     return firsat_df, tum_hisseler_df, portfoy_df, all_stock_data
 
 # --- ANA MANTIK FONKSİYONU ---
 def get_or_update_data():
-    now = datetime.now()
+    # --- SAAT DİLİMİ DÜZELTMESİ ---
+    now = datetime.now(TIMEZONE)
     needs_update = True
     cached_data = None
     old_firsat_hisseleri = []
@@ -225,15 +207,19 @@ def get_or_update_data():
             with open(CACHE_FILE, "rb") as f:
                 cached_data = pickle.load(f)
             cached_timestamp = cached_data.get("timestamp")
+            # Önbellekteki zamanı da yerel saate çevirerek karşılaştır
+            if cached_timestamp:
+                 cached_timestamp = TIMEZONE.localize(cached_timestamp)
+            
             old_firsat_hisseleri = cached_data.get("firsat_hisseleri", [])
             
             if cached_timestamp and cached_timestamp.date() == now.date() and now.time() < UPDATE_TIME:
                 needs_update = False
-        except (pickle.UnpicklingError, EOFError):
-            st.warning("Önbellek dosyası bozuk, veriler yeniden çekilecek.")
+        except (pickle.UnpicklingError, EOFError, TypeError):
+            st.warning("Önbellek dosyası bozuk veya uyumsuz, veriler yeniden çekilecek.")
 
     if not needs_update and cached_data:
-        st.info(f"Veriler en son {cached_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} tarihinde güncellenmiştir.")
+        st.info(f"Veriler en son {cached_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} (TSİ) tarihinde güncellenmiştir.")
         return cached_data
 
     with st.spinner("Piyasa verileri çekiliyor ve analiz ediliyor..."):
@@ -245,13 +231,11 @@ def get_or_update_data():
             subscribers = get_subscribers()
             if yeni_firsatlar and subscribers:
                 st.sidebar.info("Yeni fırsatlar bulundu! E-postalar gönderiliyor...")
-                
                 email_body_html = f"""
                 <html><body><p>Merhaba,</p><p>Hisse Analiz Aracı, aşağıdaki yeni potansiyel fırsatları tespit etti:</p>
                 <ul>{''.join([f'<li><b>{stock}</b></li>' for stock in yeni_firsatlar])}</ul>
                 <p>İyi günler dileriz.</p></body></html>
                 """
-                
                 success_count = 0
                 for sub in subscribers:
                     if send_email(sub, email_body_html):
@@ -261,11 +245,12 @@ def get_or_update_data():
             new_data = {
                 "firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df,
                 "portfoy_df": portfoy_df, "all_stock_data": all_stock_data,
-                "timestamp": datetime.now(), "firsat_hisseleri": new_firsat_hisseleri
+                "timestamp": datetime.now(), # Önbelleğe UTC olmayan, saf zaman damgası kaydet
+                "firsat_hisseleri": new_firsat_hisseleri
             }
             with open(CACHE_FILE, "wb") as f:
                 pickle.dump(new_data, f)
-            st.success(f"Veriler {new_data['timestamp'].strftime('%d-%m-%Y %H:%M:%S')} itibarıyla başarıyla güncellendi!")
+            st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
             return new_data
         else:
             st.error("Veri çekme veya işleme sırasında bir hata oluştu.")
@@ -281,65 +266,49 @@ with st.sidebar:
     st.header("🔔 E-posta Aboneliği")
     email_input = st.text_input("E-posta Adresiniz:", placeholder="ornek@gmail.com")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Abone Ol"):
-            if "@" in email_input and "." in email_input:
-                if add_subscriber(email_input):
-                    st.success(f"{email_input} abone listesine eklendi!")
-                else:
-                    st.warning("Bu e-posta adresi zaten listede.")
-            else:
-                st.error("Lütfen geçerli bir e-posta adresi girin.")
-    with col2:
-        if st.button("Abonelikten Çık"):
-            if "@" in email_input and "." in email_input:
-                if remove_subscriber(email_input):
-                    st.success(f"{email_input} listeden çıkarıldı.")
-                else:
-                    st.warning("Bu e-posta adresi listede bulunamadı.")
-            else:
-                st.error("Lütfen geçerli bir e-posta adresi girin.")
-
-    # --- GİZLİLİK GÜNCELLEMESİ: Abone listesi artık arayüzde gösterilmiyor. ---
-
+    # --- GÖRSEL TASARIM DÜZELTMESİ ---
+    st.button("Abone Ol", key="subscribe_button", on_click=lambda: (
+        st.success(f"{email_input} abone listesine eklendi!") if add_subscriber(email_input)
+        else st.warning("Bu e-posta adresi zaten listede.") if "@" in email_input
+        else st.error("Lütfen geçerli bir e-posta adresi girin.")
+    ))
+    
+    st.button("Abonelikten Çık", key="unsubscribe_button", on_click=lambda: (
+        st.success(f"{email_input} listeden çıkarıldı.") if remove_subscriber(email_input)
+        else st.warning("Bu e-posta adresi listede bulunamadı.") if "@" in email_input
+        else st.error("Lütfen geçerli bir e-posta adresi girin.")
+    ))
 
 st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
-st.markdown("Bu araç, her gün saat 19:00'dan sonraki ilk ziyarette BİST verilerini otomatik olarak günceller ve tüm abonelere yeni fırsatları e-posta ile bildirir.")
+st.markdown("Bu araç, her gün **Türkiye saatiyle 19:00'dan** sonraki ilk ziyarette BİST verilerini otomatik olarak günceller ve tüm abonelere yeni fırsatları e-posta ile bildirir.")
 
 data = get_or_update_data()
 
 if data:
+    # ... (Tab içerikleri öncekiyle aynı) ...
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
-    
     with tab1:
         st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
         st.dataframe(data['firsat_df'])
         st.download_button("⬇️ Fırsatları CSV Olarak İndir", to_csv(data['firsat_df']), 'firsat_hisseleri.csv', 'text/csv')
-
     with tab2:
         st.header("Tüm Hisselerin Analizi")
         st.dataframe(data['tum_hisseler_df'])
         st.download_button("⬇️ Tümünü CSV Olarak İndir", to_csv(data['tum_hisseler_df']), 'tum_hisseler.csv', 'text/csv')
-
     with tab3:
         st.header("Portföyümdeki Hisselerin Durumu")
         st.dataframe(data['portfoy_df'])
         st.download_button("⬇️ Portföyü CSV Olarak İndir", to_csv(data['portfoy_df']), 'portfoy.csv', 'text/csv')
-    
     with tab4:
         st.header("Detaylı Hisse İnceleme")
         stock_list = sorted(data['all_stock_data'].keys())
         selected_stock = st.selectbox("İncelemek istediğiniz hisseyi seçin:", stock_list)
-        
         if selected_stock:
             df_detail = data['all_stock_data'][selected_stock]
             st.subheader(f"{selected_stock} - Güncel Değerler")
             st.dataframe(data['tum_hisseler_df'][data['tum_hisseler_df']['Hisse'] == selected_stock])
-            
             st.subheader(f"{selected_stock} - Fiyat Grafiği")
             st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
-            
             st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
             st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
