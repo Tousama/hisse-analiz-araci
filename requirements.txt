@@ -5,9 +5,8 @@ pandas
 numpy
 ta
 aiohttp
-nest_asyncio
+nest-asyncio
 openpyxl
 pytz
 st-supabase-connection
 psycopg2-binary
-
