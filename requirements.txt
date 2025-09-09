@@ -5,7 +5,6 @@ pandas
 numpy
 ta
 aiohttp
-nest-asyncio
 openpyxl
 pytz
 st-supabase-connection
