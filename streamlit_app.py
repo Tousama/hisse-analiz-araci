@@ -46,10 +46,13 @@ except Exception as e:
     
 # --- Abone Yönetimi Fonksiyonları ---
 def get_subscribers():
-    df = conn.query('SELECT email FROM subscribers', ttl=0)
+    """Abone listesini veritabanından okur."""
+    # show_spinner=False ile "Running sql.query..." yazısını gizliyoruz.
+    df = conn.query('SELECT email FROM subscribers', ttl=0, show_spinner=False)
     return df['email'].tolist()
 
 def add_subscriber(email):
+    """Veritabanına yeni bir abone ekler."""
     if email not in get_subscribers():
         with conn.session as s:
             s.execute(f"INSERT INTO subscribers (email) VALUES ('{email}');")
@@ -58,6 +61,7 @@ def add_subscriber(email):
     return False
 
 def remove_subscriber(email):
+    """Veritabanından bir aboneyi siler."""
     if email in get_subscribers():
         with conn.session as s:
             s.execute(f"DELETE FROM subscribers WHERE email = '{email}';")
@@ -65,7 +69,7 @@ def remove_subscriber(email):
         return True
     return False
 
-# --- E-POSTA GÖNDERME FONKSİYONU (Geliştirilmiş Hata Raporlama ile) ---
+# --- E-POSTA GÖNDERME FONKSİYONU ---
 def send_email(recipient_email, subject, html_body):
     try:
         sender_email = st.secrets["email_credentials"]["SENDER_EMAIL"]
@@ -141,6 +145,7 @@ def generate_summary_df(stock_data_dict, stock_list):
             summary_data.append({"Hisse": stock, "Fiyat": last_row.get("Fiyat"), "Degisim": last_row.get("Degisim"), "Rsi": last_row.get("rsi"), "Ema200": last_row.get("ema200"), "P/Ema200": last_row.get("p/ema200"), "Ema200Ort": last_row.get("ema200ort"), "Muhind": last_row.get("muhind"), "LowestMuhind": df['muhind'].iloc[-lookback_period:].min(), "HighestMuhind": df['muhind'].iloc[-lookback_period:].max()})
     return pd.DataFrame(summary_data)
 
+# Dosya bazlı önbelleğe güvendiğimiz için @st.cache_data'yı kaldırıyoruz.
 def run_full_analysis():
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
     if not stock_tickers: return None, None, None, None
@@ -236,7 +241,7 @@ with st.sidebar:
             else: st.warning("Bu e-posta adresi listede bulunamadı.")
         else: st.error("Lütfen geçerli bir e-posta adresi girin.")
 
-    st.divider() # Ayırıcı çizgi
+    st.divider()
     st.header("⚙️ E-posta Test")
     if st.button("Test E-postası Gönder"):
         if "@" in email_input and "." in email_input:
@@ -250,7 +255,6 @@ with st.sidebar:
                 st.error(f"Gönderim Başarısız! Hata: {message}")
         else:
             st.warning("Lütfen test e-postası göndermek için geçerli bir e-posta adresi girin.")
-
 
 st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
 st.markdown("Bu araç, her gün **Türkiye saatiyle 19:00'dan** sonraki ilk ziyarette BİST verilerini otomatik olarak günceller ve tüm abonelere yeni fırsatları e-posta ile bildirir.")
