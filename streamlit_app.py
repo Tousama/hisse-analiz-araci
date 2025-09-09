@@ -20,7 +20,8 @@ nest_asyncio.apply()
 
 # --- Konfigürasyon ---
 CONFIG = {
-    "isyatirim_url": "https.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx",
+    # --- DÜZELTME: Hatalı URL adresi düzeltildi ---
+    "isyatirim_url": "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx",
     "data_url_template": "https://www.isyatirim.com.tr/_Layouts/15/IsYatirim.Website/Common/ChartData.aspx/IndexHistoricalAll?period=1440&from={from_date}&to={to_date}&endeks={stock_code}",
     "start_date": "20200101000000",
     "end_date": "20251231235959",
@@ -42,7 +43,7 @@ except Exception as e:
     st.stop()
     
 # --- Abone Yönetimi Fonksiyonları ---
-@st.cache_data(ttl=60, show_spinner=False) # show_spinner=False, "Running..." mesajını gizler
+@st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
     return df['email'].tolist()
@@ -223,29 +224,32 @@ def main():
     
     firsat_df, tum_hisseler_df, portfoy_df, all_stock_data = run_full_analysis(cache_key)
 
-    if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
-        firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-        
-        # --- YENİ: Sağlamlaştırılmış Abone Kontrolü ---
-        subscribers = []
-        try:
-            subscribers = get_subscribers()
-        except Exception as e:
-            st.sidebar.warning(f"Aboneler kontrol edilemedi, e-posta gönderilmeyecek. Hata: {e}")
-
-        if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
-            st.sidebar.info(f"Fırsatlar bulundu! {len(subscribers)} aboneye e-posta gönderiliyor...")
-            email_body_html = f"<html><body><p>Günün Hisse Fırsatları Raporu:</p><ul>{''.join([f'<li><b>{stock}</b></li>' for stock in firsat_hisseleri_listesi])}</ul></body></html>"
-            subject = "Günlük Hisse Senedi Fırsatları Raporu"
-            success_count = 0
-            for sub in subscribers:
-                success, message = send_email(sub, subject, email_body_html)
-                if success: success_count += 1
-            st.sidebar.success(f"{success_count}/{len(subscribers)} aboneye bildirim gönderildi.")
-            st.session_state.last_email_sent_key = cache_key
-
+    # --- DÜZELTME: Hata yönetimi bloğu eklendi ---
+    # E-posta gönderme ve sekmeleri gösterme işlemleri, sadece veri başarıyla çekildiyse yapılır.
     if tum_hisseler_df is not None:
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Potensiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
+        # E-posta gönderme mantığı
+        if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
+            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
+            
+            subscribers = []
+            try:
+                subscribers = get_subscribers()
+            except Exception as e:
+                st.sidebar.warning(f"Aboneler kontrol edilemedi, e-posta gönderilmeyecek. Hata: {e}")
+
+            if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
+                st.sidebar.info(f"Fırsatlar bulundu! {len(subscribers)} aboneye e-posta gönderiliyor...")
+                email_body_html = f"<html><body><p>Günün Hisse Fırsatları Raporu:</p><ul>{''.join([f'<li><b>{stock}</b></li>' for stock in firsat_hisseleri_listesi])}</ul></body></html>"
+                subject = "Günlük Hisse Senedi Fırsatları Raporu"
+                success_count = 0
+                for sub in subscribers:
+                    success, message = send_email(sub, subject, email_body_html)
+                    if success: success_count += 1
+                st.sidebar.success(f"{success_count}/{len(subscribers)} aboneye bildirim gönderildi.")
+                st.session_state.last_email_sent_key = cache_key
+        
+        # Sekmeleri gösterme mantığı
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Potensyiel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
             st.dataframe(firsat_df)
