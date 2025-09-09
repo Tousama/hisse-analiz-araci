@@ -8,15 +8,14 @@ from ta.trend import EMAIndicator
 from datetime import datetime, time, timedelta
 import asyncio
 import aiohttp
-import nest_async_io
+# nest_asyncio kütüphanesine artık ihtiyaç yok, bu yüzden kaldırıldı.
 import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import pytz
 
-# Jupyter/Spyder gibi ortamlarda asyncio hatasını önlemek için
-nest_async_io.apply()
+# nest_asyncio.apply() çağrısına artık ihtiyaç yok.
 
 # --- Konfigürasyon ---
 CONFIG = {
@@ -150,8 +149,6 @@ def run_full_analysis(_cache_key):
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
     if not stock_tickers: return None
     all_stock_data = {}
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     
     progress_bar_container = st.empty()
     
@@ -169,7 +166,7 @@ def run_full_analysis(_cache_key):
                 progress_bar_container.progress(processed_stocks / total_stocks, text=f"Piyasa verileri çekiliyor... ({processed_stocks}/{total_stocks})")
             return results
 
-    results = loop.run_until_complete(run_fetch())
+    results = asyncio.run(run_fetch())
     progress_bar_container.empty()
     
     for stock_code, raw_data in results:
@@ -235,7 +232,7 @@ def main():
         portfoy_df = analysis_results["portfoy_df"]
         all_stock_data = analysis_results["all_stock_data"]
         
-        # --- MANTIK SIRASI DÜZELTMESİ: ÖNCE ARAYÜZÜ ÇİZ ---
+        # MANTIK SIRASI DÜZELTMESİ: ÖNCE ARAYÜZÜ ÇİZ
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
@@ -259,7 +256,7 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
                 st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
-        # --- SONRA E-POSTA İŞLEMİNİ YAP ---
+        # SONRA E-POSTA İŞLEMİNİ YAP
         if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
             subscribers = []
