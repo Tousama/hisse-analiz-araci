@@ -6,8 +6,7 @@ numpy
 ta
 aiohttp
 nest_asyncio
-pytz
 openpyxl
-sqlalchemy
-streamlit-supabase-connection
+pytz
+st-supabase-connection
 psycopg2-binary
