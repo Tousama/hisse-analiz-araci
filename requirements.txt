@@ -9,3 +9,4 @@ openpyxl
 pytz
 st-supabase-connection
 psycopg2-binary
+sqlalchemy
