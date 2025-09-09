@@ -20,7 +20,7 @@ nest_asyncio.apply()
 
 # --- Konfigürasyon ---
 CONFIG = {
-    "isyatirim_url": "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx",
+    "isyatirim_url": "https.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx",
     "data_url_template": "https://www.isyatirim.com.tr/_Layouts/15/IsYatirim.Website/Common/ChartData.aspx/IndexHistoricalAll?period=1440&from={from_date}&to={to_date}&endeks={stock_code}",
     "start_date": "20200101000000",
     "end_date": "20251231235959",
@@ -42,7 +42,7 @@ except Exception as e:
     st.stop()
     
 # --- Abone Yönetimi Fonksiyonları ---
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner=False) # show_spinner=False, "Running..." mesajını gizler
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
     return df['email'].tolist()
@@ -109,7 +109,6 @@ async def fetch_stock_data(session, stock_code, semaphore):
                 await asyncio.sleep(CONFIG["request_delay"])
                 return stock_code, data.get("data", [])
         except Exception:
-            # Hata durumunda boş veri döndürerek diğerlerini engelleme
             print(f"Hata: {stock_code} verisi çekilemedi.")
             return stock_code, None
 
@@ -154,21 +153,15 @@ def run_full_analysis(_cache_key):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # --- YENİ: İlerleme Çubuğu ve Zaman Aşımı Koruması ---
     progress_bar_container = st.empty()
     
     async def run_fetch():
-        # Her bir istek için 60 saniyelik zaman aşımı
         timeout = aiohttp.ClientTimeout(total=60)
         semaphore = asyncio.Semaphore(CONFIG["concurrent_requests"])
         async with aiohttp.ClientSession(headers=CONFIG["headers"], timeout=timeout) as session:
             tasks = [asyncio.ensure_future(fetch_stock_data(session, stock, semaphore)) for stock in stock_tickers]
-            
             results = []
-            total_stocks = len(stock_tickers)
-            processed_stocks = 0
-            
-            # asyncio.gather yerine as_completed kullanarak anlık ilerleme takibi
+            total_stocks, processed_stocks = len(stock_tickers), 0
             for f in asyncio.as_completed(tasks):
                 result = await f
                 results.append(result)
@@ -232,9 +225,16 @@ def main():
 
     if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
         firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-        subscribers = get_subscribers()
+        
+        # --- YENİ: Sağlamlaştırılmış Abone Kontrolü ---
+        subscribers = []
+        try:
+            subscribers = get_subscribers()
+        except Exception as e:
+            st.sidebar.warning(f"Aboneler kontrol edilemedi, e-posta gönderilmeyecek. Hata: {e}")
+
         if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
-            st.sidebar.info("Fırsatlar bulundu! E-postalar gönderiliyor...")
+            st.sidebar.info(f"Fırsatlar bulundu! {len(subscribers)} aboneye e-posta gönderiliyor...")
             email_body_html = f"<html><body><p>Günün Hisse Fırsatları Raporu:</p><ul>{''.join([f'<li><b>{stock}</b></li>' for stock in firsat_hisseleri_listesi])}</ul></body></html>"
             subject = "Günlük Hisse Senedi Fırsatları Raporu"
             success_count = 0
@@ -245,7 +245,7 @@ def main():
             st.session_state.last_email_sent_key = cache_key
 
     if tum_hisseler_df is not None:
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Potensiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
             st.dataframe(firsat_df)
