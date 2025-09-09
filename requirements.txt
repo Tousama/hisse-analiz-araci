@@ -10,3 +10,4 @@ openpyxl
 pytz
 st-supabase-connection
 psycopg2-binary
+nest_async_io
