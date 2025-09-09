@@ -8,14 +8,11 @@ from ta.trend import EMAIndicator
 from datetime import datetime, time, timedelta
 import asyncio
 import aiohttp
-# nest_asyncio kütüphanesine artık ihtiyaç yok, bu yüzden kaldırıldı.
 import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import pytz
-
-# nest_asyncio.apply() çağrısına artık ihtiyaç yok.
 
 # --- Konfigürasyon ---
 CONFIG = {
@@ -182,12 +179,7 @@ def run_full_analysis(_cache_key):
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
     st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
     
-    return {
-        "firsat_df": firsat_df, 
-        "tum_hisseler_df": tum_hisseler_df, 
-        "portfoy_df": portfoy_df, 
-        "all_stock_data": all_stock_data
-    }
+    return {"firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df, "portfoy_df": portfoy_df, "all_stock_data": all_stock_data}
 
 # --- ANA MANTIK FONKSİYONU ---
 def main():
@@ -196,25 +188,33 @@ def main():
     with st.sidebar:
         st.header("🔔 E-posta Aboneliği")
         email_input = st.text_input("E-posta Adresiniz:", placeholder="ornek@gmail.com")
+        
         if st.button("Abone Ol"):
-            if "@" in email_input and "." in email_input:
-                if add_subscriber(email_input): st.success(f"{email_input} abone listesine eklendi!")
-                else: st.warning("Bu e-posta adresi zaten listede.")
-            else: st.error("Lütfen geçerli bir e-posta adresi girin.")
+            with st.spinner("İşlem yapılıyor..."):
+                if "@" in email_input and "." in email_input:
+                    if add_subscriber(email_input): st.success(f"{email_input} abone listesine eklendi!")
+                    else: st.warning("Bu e-posta adresi zaten listede.")
+                else: st.error("Lütfen geçerli bir e-posta adresi girin.")
+        
         if st.button("Abonelikten Çık"):
-            if "@" in email_input and "." in email_input:
-                if remove_subscriber(email_input): st.success(f"{email_input} listeden çıkarıldı.")
-                else: st.warning("Bu e-posta adresi listede bulunamadı.")
-            else: st.error("Lütfen geçerli bir e-posta adresi girin.")
+            with st.spinner("İşlem yapılıyor..."):
+                if "@" in email_input and "." in email_input:
+                    if remove_subscriber(email_input): st.success(f"{email_input} listeden çıkarıldı.")
+                    else: st.warning("Bu e-posta adresi listede bulunamadı.")
+                else: st.error("Lütfen geçerli bir e-posta adresi girin.")
+        
         st.divider()
         st.header("⚙️ E-posta Test")
         if st.button("Test E-postası Gönder"):
             if "@" in email_input and "." in email_input:
-                st.info("Test e-postası gönderiliyor...")
-                success, message = send_email(email_input, "Test E-postası", "<html><body>Bu bir test mesajıdır.</body></html>")
-                if success: st.success(f"Başarılı! '{email_input}' adresine test e-postası gönderildi.")
-                else: st.error(f"Başarısız! Hata: {message}")
-            else: st.warning("Lütfen geçerli bir e-posta adresi girin.")
+                with st.spinner("Test e-postası gönderiliyor..."):
+                    success, message = send_email(email_input, "Test E-postası", "<html><body>Bu bir test mesajıdır.</body></html>")
+                    if success:
+                        st.success(f"Başarılı! '{email_input}' adresine test e-postası gönderildi.")
+                    else:
+                        st.error(f"Başarısız! Hata: {message}")
+            else:
+                st.warning("Lütfen test e-postası göndermek için geçerli bir e-posta adresi girin.")
 
     st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
     st.markdown("Bu araç, her gün **Türkiye saatiyle 19:00'dan** sonraki ilk ziyarette BİST verilerini otomatik olarak günceller.")
@@ -232,7 +232,6 @@ def main():
         portfoy_df = analysis_results["portfoy_df"]
         all_stock_data = analysis_results["all_stock_data"]
         
-        # MANTIK SIRASI DÜZELTMESİ: ÖNCE ARAYÜZÜ ÇİZ
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
@@ -256,7 +255,6 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
                 st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
-        # SONRA E-POSTA İŞLEMİNİ YAP
         if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
             subscribers = []
