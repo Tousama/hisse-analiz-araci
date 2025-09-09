@@ -8,7 +8,7 @@ from ta.trend import EMAIndicator
 from datetime import datetime, time, timedelta
 import asyncio
 import aiohttp
-import nest_asyncio
+import nest_async_io
 import smtplib
 import ssl
 from email.mime.text import MIMEText
@@ -16,11 +16,10 @@ from email.mime.multipart import MIMEMultipart
 import pytz
 
 # Jupyter/Spyder gibi ortamlarda asyncio hatasını önlemek için
-nest_asyncio.apply()
+nest_async_io.apply()
 
 # --- Konfigürasyon ---
 CONFIG = {
-    # --- DÜZELTME: Hatalı URL adresi düzeltildi ---
     "isyatirim_url": "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx",
     "data_url_template": "https://www.isyatirim.com.tr/_Layouts/15/IsYatirim.Website/Common/ChartData.aspx/IndexHistoricalAll?period=1440&from={from_date}&to={to_date}&endeks={stock_code}",
     "start_date": "20200101000000",
@@ -146,7 +145,7 @@ def generate_summary_df(stock_data_dict, stock_list):
             summary_data.append({"Hisse": stock, "Fiyat": last_row.get("Fiyat"), "Degisim": last_row.get("Degisim"), "Rsi": last_row.get("rsi"), "Ema200": last_row.get("ema200"), "P/Ema200": last_row.get("p/ema200"), "Ema200Ort": last_row.get("ema200ort"), "Muhind": last_row.get("muhind"), "LowestMuhind": df['muhind'].iloc[-lookback_period:].min(), "HighestMuhind": df['muhind'].iloc[-lookback_period:].max()})
     return pd.DataFrame(summary_data)
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def run_full_analysis(_cache_key):
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
     if not stock_tickers: return None
@@ -228,7 +227,6 @@ def main():
     if now.time() >= UPDATE_TIME:
         cache_key += "-aksam"
     
-    # --- DÜZELTME: Hata yönetimi bloğu ---
     analysis_results = run_full_analysis(cache_key)
 
     if analysis_results:
@@ -236,28 +234,8 @@ def main():
         tum_hisseler_df = analysis_results["tum_hisseler_df"]
         portfoy_df = analysis_results["portfoy_df"]
         all_stock_data = analysis_results["all_stock_data"]
-
-        # E-posta gönderme mantığı
-        if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
-            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-            subscribers = []
-            try:
-                subscribers = get_subscribers()
-            except Exception as e:
-                st.sidebar.warning(f"Aboneler kontrol edilemedi: {e}")
-
-            if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
-                st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
-                email_body_html = f"<html><body><p>Günün Hisse Fırsatları:</p><ul>{''.join([f'<li><b>{s}</b></li>' for s in firsat_hisseleri_listesi])}</ul></body></html>"
-                subject = "Günlük Hisse Fırsatları Raporu"
-                success_count = 0
-                for sub in subscribers:
-                    success, message = send_email(sub, subject, email_body_html)
-                    if success: success_count += 1
-                st.sidebar.success(f"{success_count}/{len(subscribers)} aboneye bildirim gönderildi.")
-                st.session_state.last_email_sent_key = cache_key
         
-        # Sekmeleri gösterme mantığı
+        # --- MANTIK SIRASI DÜZELTMESİ: ÖNCE ARAYÜZÜ ÇİZ ---
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
@@ -280,6 +258,26 @@ def main():
                 st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
                 st.line_chart(df_detail.set_index('Tarih')['muhind'])
+
+        # --- SONRA E-POSTA İŞLEMİNİ YAP ---
+        if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
+            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
+            subscribers = []
+            try:
+                subscribers = get_subscribers()
+            except Exception as e:
+                st.sidebar.warning(f"Aboneler kontrol edilemedi: {e}")
+
+            if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
+                st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
+                email_body_html = f"<html><body><p>Günün Hisse Fırsatları:</p><ul>{''.join([f'<li><b>{s}</b></li>' for s in firsat_hisseleri_listesi])}</ul></body></html>"
+                subject = "Günlük Hisse Fırsatları Raporu"
+                success_count = 0
+                for sub in subscribers:
+                    success, message = send_email(sub, subject, email_body_html)
+                    if success: success_count += 1
+                st.sidebar.success(f"{success_count}/{len(subscribers)} aboneye bildirim gönderildi.")
+                st.session_state.last_email_sent_key = cache_key
 
 if __name__ == "__main__":
     main()
