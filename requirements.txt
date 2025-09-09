@@ -9,3 +9,5 @@ nest_asyncio
 pytz
 openpyxl
 sqlalchemy
+streamlit-supabase-connection
+psycopg2-binary
