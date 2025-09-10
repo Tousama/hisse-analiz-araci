@@ -112,7 +112,6 @@ def send_email(recipient_email, subject, html_body):
         return False, f"Bilinmeyen bir hata oluştu: {e}"
 
 # --- VERİ İŞLEME FONKSİYONLARI ---
-# ... (Önceki kodla aynı olan fonksiyonlar) ...
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
@@ -207,7 +206,19 @@ def run_full_analysis(_cache_key):
 # --- ANA MANTIK FONKSİYONU ---
 def main():
     st.set_page_config(page_title="Hisse Analiz Aracı", layout="wide")
+    
+    st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
+    st.markdown("Bu araç, her gün **Türkiye saatiyle 19:00'dan** sonraki ilk ziyarette BİST verilerini otomatik olarak günceller.")
 
+    now = datetime.now(TIMEZONE)
+    cache_key = now.date().isoformat()
+    if now.time() >= UPDATE_TIME:
+        cache_key += "-aksam"
+    
+    analysis_results = run_full_analysis(cache_key)
+
+    # --- KENAR ÇUBUĞU (SIDEBAR) ---
+    # Analiz bittikten sonra kenar çubuğunu oluştur
     with st.sidebar:
         st.header("🔔 E-posta Aboneliği")
         email_input = st.text_input("E-posta Adresiniz:", placeholder="ornek@gmail.com", key="email_input_key")
@@ -240,17 +251,24 @@ def main():
                     else: st.error(f"Başarısız! Hata: {message}")
             else:
                 st.warning("Lütfen test e-postası göndermek için geçerli bir e-posta adresi girin.")
+        
+        # Analiz sonuçları varsa Bildirim Durum Panelini göster
+        if analysis_results:
+            st.divider()
+            st.header("📊 Bildirim Durumu")
+            firsat_df = analysis_results["firsat_df"]
+            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
+            subscribers = get_subscribers()
+            
+            firsat_var_mi = bool(firsat_hisseleri_listesi)
+            abone_var_mi = bool(subscribers)
+            zaman_uygun_mu = now.time() >= UPDATE_TIME
+            
+            st.metric("Potansiyel Fırsat Bulundu mu?", "Evet" if firsat_var_mi else "Hayır")
+            st.metric("Kayıtlı Abone Var mı?", f"{len(subscribers)} kişi" if abone_var_mi else "Hayır")
+            st.metric("Saat 19:00'dan Sonra mı?", "Evet" if zaman_uygun_mu else "Hayır")
 
-    st.title("📈 Otomatik BİST Hisse Senedi Analiz Aracı")
-    st.markdown("Bu araç, her gün **Türkiye saatiyle 19:00'dan** sonraki ilk ziyarette BİST verilerini otomatik olarak günceller.")
-
-    now = datetime.now(TIMEZONE)
-    cache_key = now.date().isoformat()
-    if now.time() >= UPDATE_TIME:
-        cache_key += "-aksam"
-    
-    analysis_results = run_full_analysis(cache_key)
-
+    # --- ANA İÇERİK ---
     if analysis_results:
         firsat_df = analysis_results["firsat_df"]
         tum_hisseler_df = analysis_results["tum_hisseler_df"]
@@ -258,7 +276,6 @@ def main():
         all_stock_data = analysis_results["all_stock_data"]
         
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
-        # ... (Tab içerikleri öncekiyle aynı) ...
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
             st.dataframe(firsat_df)
@@ -281,24 +298,12 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
                 st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
-        # --- YENİ BİLDİRİM DURUM PANELİ ---
-        with st.sidebar:
-            st.divider()
-            st.header("📊 Bildirim Durumu")
-            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-            subscribers = get_subscribers()
-            
-            firsat_var_mi = bool(firsat_hisseleri_listesi)
-            abone_var_mi = bool(subscribers)
-            zaman_uygun_mu = now.time() >= UPDATE_TIME
-            
-            st.metric("Potansiyel Fırsat Bulundu mu?", "Evet" if firsat_var_mi else "Hayır")
-            st.metric("Kayıtlı Abone Var mı?", f"{len(subscribers)} kişi" if abone_var_mi else "Hayır")
-            st.metric("Saat 19:00'dan Sonra mı?", "Evet" if zaman_uygun_mu else "Hayır")
-        
         # E-posta gönderme mantığı
         if not check_if_email_sent(cache_key):
-            if firsat_var_mi and abone_var_mi and zaman_uygun_mu:
+            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
+            subscribers = get_subscribers()
+
+            if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
                 st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
                 email_body_html = f"<html><body><p>Günün Hisse Fırsatları:</p><ul>{''.join([f'<li><b>{s}</b></li>' for s in firsat_hisseleri_listesi])}</ul></body></html>"
                 subject = "Günlük Hisse Fırsatları Raporu"
