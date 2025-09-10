@@ -38,7 +38,7 @@ except Exception as e:
     st.error(f"Veritabanı bağlantısı kurulamadı. 'Secrets' ayarlarınızı kontrol edin. Hata: {e}")
     st.stop()
     
-# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları (Yeniden Yazıldı) ---
+# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları (Yeniden Yazıldı ve Sağlamlaştırıldı) ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
@@ -46,37 +46,43 @@ def get_subscribers():
 
 def add_subscriber(email):
     clean_email = email.strip().lower()
-    # 1. Önce e-postanın var olup olmadığını kontrol et
-    if clean_email in get_subscribers():
-        st.warning("Bu e-posta adresi zaten listede.")
-        return
-
-    # 2. Eğer yoksa, ekleme işlemini yap
     try:
         with conn.session as s:
-            query = text("INSERT INTO subscribers (email) VALUES (:email);")
-            s.execute(query, params={"email": clean_email})
+            # ON CONFLICT ile yinelenen kayıt hatasını veritabanı seviyesinde önle. Bu, en güvenli yöntemdir.
+            query = text("""
+                INSERT INTO subscribers (email) VALUES (:email)
+                ON CONFLICT (email) DO NOTHING;
+            """)
+            result = s.execute(query, params={"email": clean_email})
             s.commit()
-        get_subscribers.clear() # Yeni aboneyi görmek için önbelleği temizle
-        st.success(f"{clean_email} abone listesine başarıyla eklendi!")
+        
+        get_subscribers.clear() # Önbelleği temizle
+
+        # result.rowcount, etkilenen satır sayısını verir. 1 ise yeni kayıt, 0 ise zaten var demektir.
+        if result.rowcount > 0:
+            st.success(f"{clean_email} abone listesine başarıyla eklendi!")
+        else:
+            st.warning("Bu e-posta adresi zaten listede.")
+            
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
 def remove_subscriber(email):
     clean_email = email.strip().lower()
-    # 1. Önce e-postanın var olup olmadığını kontrol et
-    if clean_email not in get_subscribers():
-        st.warning("Bu e-posta adresi listede bulunamadı.")
-        return
-
-    # 2. Eğer varsa, silme işlemini yap
     try:
         with conn.session as s:
+            # Doğrudan silmeyi dene ve etkilenen satır sayısını kontrol et
             query = text("DELETE FROM subscribers WHERE email = :email;")
-            s.execute(query, params={"email": clean_email})
+            result = s.execute(query, params={"email": clean_email})
             s.commit()
-        get_subscribers.clear() # Listenin güncellenmesi için önbelleği temizle
-        st.success(f"{clean_email} listeden başarıyla çıkarıldı.")
+
+        get_subscribers.clear() # Önbelleği temizle
+
+        if result.rowcount > 0:
+            st.success(f"{clean_email} listeden başarıyla çıkarıldı.")
+        else:
+            st.warning("Bu e-posta adresi listede bulunamadı.")
+            
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
@@ -118,7 +124,6 @@ def send_email(recipient_email, subject, html_body):
         return False, f"Bilinmeyen bir hata oluştu: {e}"
 
 # --- VERİ İŞLEME FONKSİYONLARI ---
-# ... (Önceki kodla aynı olan fonksiyonlar) ...
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
