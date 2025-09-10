@@ -74,11 +74,12 @@ def remove_subscriber(email):
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
-# --- YENİ EKLENEN FONKSİYONLAR ---
+# --- DÜZELTME: "Cannot hash argument 'sql'" hatasını çözen fonksiyon ---
 def check_if_email_sent(cache_key):
     """Veritabanını kontrol ederek bu anahtar için e-posta gönderilip gönderilmediğini anlar."""
     try:
-        query = text("SELECT COUNT(*) FROM sent_emails WHERE cache_key = :cache_key")
+        # Sorguyu 'text()' objesi yerine normal bir string olarak gönderiyoruz.
+        query = "SELECT COUNT(*) FROM sent_emails WHERE cache_key = :cache_key"
         df = conn.query(query, params={"cache_key": cache_key}, show_spinner=False, ttl=0)
         return df.iloc[0, 0] > 0
     except Exception as e:
@@ -115,6 +116,7 @@ def send_email(recipient_email, subject, html_body):
         return False, f"Bilinmeyen bir hata oluştu: {e}"
 
 # --- VERİ İŞLEME FONKSİYONLARI ---
+# ... (Önceki kodla aynı olan fonksiyonlar) ...
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
