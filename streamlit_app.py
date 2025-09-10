@@ -13,6 +13,7 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import pytz
+from sqlalchemy.sql import text
 
 # --- Konfigürasyon ---
 CONFIG = {
@@ -37,29 +38,56 @@ except Exception as e:
     st.error(f"Veritabanı bağlantısı kurulamadı. 'Secrets' ayarlarınızı kontrol edin. Hata: {e}")
     st.stop()
     
-# --- Abone Yönetimi Fonksiyonları ---
+# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
     return df['email'].tolist()
 
 def add_subscriber(email):
-    if email not in get_subscribers():
-        with conn.session as s:
-            s.execute(f"INSERT INTO subscribers (email) VALUES ('{email}');")
-            s.commit()
-        get_subscribers.clear()
-        return True
-    return False
+    try:
+        if email not in get_subscribers():
+            with conn.session as s:
+                s.execute(text("INSERT INTO subscribers (email) VALUES (:email);"), params={"email": email})
+                s.commit()
+            get_subscribers.clear()
+            return True, f"{email} abone listesine eklendi!"
+        else:
+            return False, "Bu e-posta adresi zaten listede."
+    except Exception as e:
+        return False, f"Veritabanı hatası: {e}"
 
 def remove_subscriber(email):
-    if email in get_subscribers():
+    try:
+        if email in get_subscribers():
+            with conn.session as s:
+                s.execute(text("DELETE FROM subscribers WHERE email = :email;"), params={"email": email})
+                s.commit()
+            get_subscribers.clear()
+            return True, f"{email} listeden çıkarıldı."
+        else:
+            return False, "Bu e-posta adresi listede bulunamadı."
+    except Exception as e:
+        return False, f"Veritabanı hatası: {e}"
+
+def check_if_email_sent(cache_key):
+    """Veritabanını kontrol ederek bu anahtar için e-posta gönderilip gönderilmediğini anlar."""
+    try:
+        query = f"SELECT COUNT(*) FROM sent_emails WHERE cache_key = '{cache_key}'"
+        df = conn.query(query, show_spinner=False, ttl=0)
+        return df.iloc[0, 0] > 0
+    except Exception as e:
+        st.sidebar.warning(f"Gönderilmiş e-posta kontrol edilemedi: {e}")
+        return True # Hata durumunda spam önlemek için gönderildi varsay
+
+def log_email_sent(cache_key):
+    """E-posta gönderildikten sonra veritabanına kayıt düşer."""
+    try:
         with conn.session as s:
-            s.execute(f"DELETE FROM subscribers WHERE email = '{email}';")
+            s.execute(text("INSERT INTO sent_emails (cache_key) VALUES (:cache_key);"), params={"cache_key": cache_key})
             s.commit()
-        get_subscribers.clear()
-        return True
-    return False
+    except Exception as e:
+        st.sidebar.error(f"E-posta gönderim kaydı yapılamadı: {e}")
 
 # --- E-POSTA GÖNDERME FONKSİYONU ---
 def send_email(recipient_email, subject, html_body):
@@ -78,8 +106,6 @@ def send_email(recipient_email, subject, html_body):
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, recipient_email, message.as_string())
         return True, "E-posta başarıyla gönderildi."
-    except smtplib.SMTPAuthenticationError:
-        return False, "SMTP Kimlik Doğrulama Hatası! Lütfen 'Secrets' içindeki bilgilerinizi kontrol edin."
     except Exception as e:
         return False, f"Bilinmeyen bir hata oluştu: {e}"
 
@@ -94,7 +120,6 @@ def fetch_stock_tickers(url, headers):
     except requests.exceptions.RequestException as e:
         st.error(f"Hisse senedi listesi çekilirken hata oluştu: {e}")
         return []
-
 async def fetch_stock_data(session, stock_code, semaphore):
     url = CONFIG["data_url_template"].format(from_date=CONFIG["start_date"], to_date=CONFIG["end_date"], stock_code=stock_code)
     async with semaphore:
@@ -105,21 +130,17 @@ async def fetch_stock_data(session, stock_code, semaphore):
                 await asyncio.sleep(CONFIG["request_delay"])
                 return stock_code, data.get("data", [])
         except Exception:
-            print(f"Hata: {stock_code} verisi çekilemedi.")
             return stock_code, None
-
 def process_raw_data(raw_data):
     if not raw_data: return pd.DataFrame()
     dates = pd.to_datetime([item[0] for item in raw_data], unit='ms')
     prices = [item[1] for item in raw_data]
     return pd.DataFrame({"Tarih": dates, "Fiyat": prices})
-
 def clean_data(df):
     if len(df) > CONFIG["max_data_rows"]:
         df = df.iloc[-CONFIG["max_data_rows"]:].reset_index(drop=True)
     df['Fiyat'] = df['Fiyat'].replace(0, np.nan).replace(0.0001, np.nan).ffill().bfill()
     return df
-
 def calculate_indicators(df):
     if 'Fiyat' not in df.columns or df['Fiyat'].isnull().all() or len(df) < CONFIG["ema_period"]:
         return df
@@ -130,7 +151,6 @@ def calculate_indicators(df):
     df["muhind"] = df["p/ema200"] / df["ema200ort"]
     df['Degisim'] = round((df['Fiyat'] / df['Fiyat'].shift(1) - 1) * 100, 2)
     return df
-
 def generate_summary_df(stock_data_dict, stock_list):
     summary_data = []
     for stock in stock_list:
@@ -140,6 +160,7 @@ def generate_summary_df(stock_data_dict, stock_list):
             lookback_period = min(240, len(df))
             summary_data.append({"Hisse": stock, "Fiyat": last_row.get("Fiyat"), "Degisim": last_row.get("Degisim"), "Rsi": last_row.get("rsi"), "Ema200": last_row.get("ema200"), "P/Ema200": last_row.get("p/ema200"), "Ema200Ort": last_row.get("ema200ort"), "Muhind": last_row.get("muhind"), "LowestMuhind": df['muhind'].iloc[-lookback_period:].min(), "HighestMuhind": df['muhind'].iloc[-lookback_period:].max()})
     return pd.DataFrame(summary_data)
+
 
 @st.cache_data(show_spinner=False)
 def run_full_analysis(_cache_key):
@@ -192,15 +213,17 @@ def main():
         if st.button("Abone Ol"):
             with st.spinner("İşlem yapılıyor..."):
                 if "@" in email_input and "." in email_input:
-                    if add_subscriber(email_input): st.success(f"{email_input} abone listesine eklendi!")
-                    else: st.warning("Bu e-posta adresi zaten listede.")
+                    success, message = add_subscriber(email_input)
+                    if success: st.success(message)
+                    else: st.error(message)
                 else: st.error("Lütfen geçerli bir e-posta adresi girin.")
         
         if st.button("Abonelikten Çık"):
             with st.spinner("İşlem yapılıyor..."):
                 if "@" in email_input and "." in email_input:
-                    if remove_subscriber(email_input): st.success(f"{email_input} listeden çıkarıldı.")
-                    else: st.warning("Bu e-posta adresi listede bulunamadı.")
+                    success, message = remove_subscriber(email_input)
+                    if success: st.success(message)
+                    else: st.error(message)
                 else: st.error("Lütfen geçerli bir e-posta adresi girin.")
         
         st.divider()
@@ -233,6 +256,7 @@ def main():
         all_stock_data = analysis_results["all_stock_data"]
         
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
+        # ... (Tab içerikleri öncekiyle aynı) ...
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
             st.dataframe(firsat_df)
@@ -255,13 +279,10 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
                 st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
-        if 'last_email_sent_key' not in st.session_state or st.session_state.last_email_sent_key != cache_key:
+        # GÜNCELLENMİŞ E-POSTA GÖNDERİM MANTIĞI
+        if not check_if_email_sent(cache_key):
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-            subscribers = []
-            try:
-                subscribers = get_subscribers()
-            except Exception as e:
-                st.sidebar.warning(f"Aboneler kontrol edilemedi: {e}")
+            subscribers = get_subscribers()
 
             if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
                 st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
@@ -271,8 +292,11 @@ def main():
                 for sub in subscribers:
                     success, message = send_email(sub, subject, email_body_html)
                     if success: success_count += 1
+                
                 st.sidebar.success(f"{success_count}/{len(subscribers)} aboneye bildirim gönderildi.")
-                st.session_state.last_email_sent_key = cache_key
+                # E-posta gönderimi başarılıysa veritabanına kaydet
+                if success_count > 0:
+                    log_email_sent(cache_key)
 
 if __name__ == "__main__":
     main()
