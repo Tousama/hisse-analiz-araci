@@ -38,7 +38,7 @@ except Exception as e:
     st.error(f"Veritabanı bağlantısı kurulamadı. 'Secrets' ayarlarınızı kontrol edin. Hata: {e}")
     st.stop()
     
-# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları ---
+# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları (Yeniden Yazıldı) ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
@@ -46,31 +46,37 @@ def get_subscribers():
 
 def add_subscriber(email):
     clean_email = email.strip().lower()
+    # 1. Önce e-postanın var olup olmadığını kontrol et
+    if clean_email in get_subscribers():
+        st.warning("Bu e-posta adresi zaten listede.")
+        return
+
+    # 2. Eğer yoksa, ekleme işlemini yap
     try:
         with conn.session as s:
-            query = text("INSERT INTO subscribers (email) VALUES (:email) ON CONFLICT (email) DO NOTHING;")
-            result = s.execute(query, params={"email": clean_email})
+            query = text("INSERT INTO subscribers (email) VALUES (:email);")
+            s.execute(query, params={"email": clean_email})
             s.commit()
-        get_subscribers.clear()
-        if result.rowcount > 0:
-            st.success(f"{clean_email} abone listesine başarıyla eklendi!")
-        else:
-            st.warning("Bu e-posta adresi zaten listede.")
+        get_subscribers.clear() # Yeni aboneyi görmek için önbelleği temizle
+        st.success(f"{clean_email} abone listesine başarıyla eklendi!")
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
 def remove_subscriber(email):
     clean_email = email.strip().lower()
+    # 1. Önce e-postanın var olup olmadığını kontrol et
+    if clean_email not in get_subscribers():
+        st.warning("Bu e-posta adresi listede bulunamadı.")
+        return
+
+    # 2. Eğer varsa, silme işlemini yap
     try:
         with conn.session as s:
             query = text("DELETE FROM subscribers WHERE email = :email;")
-            result = s.execute(query, params={"email": clean_email})
+            s.execute(query, params={"email": clean_email})
             s.commit()
-        get_subscribers.clear()
-        if result.rowcount > 0:
-            st.success(f"{clean_email} listeden başarıyla çıkarıldı.")
-        else:
-            st.warning("Bu e-posta adresi listede bulunamadı.")
+        get_subscribers.clear() # Listenin güncellenmesi için önbelleği temizle
+        st.success(f"{clean_email} listeden başarıyla çıkarıldı.")
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
@@ -112,6 +118,7 @@ def send_email(recipient_email, subject, html_body):
         return False, f"Bilinmeyen bir hata oluştu: {e}"
 
 # --- VERİ İŞLEME FONKSİYONLARI ---
+# ... (Önceki kodla aynı olan fonksiyonlar) ...
 def fetch_stock_tickers(url, headers):
     try:
         response = requests.get(url, headers=headers)
@@ -217,8 +224,6 @@ def main():
     
     analysis_results = run_full_analysis(cache_key)
 
-    # --- KENAR ÇUBUĞU (SIDEBAR) ---
-    # Analiz bittikten sonra kenar çubuğunu oluştur
     with st.sidebar:
         st.header("🔔 E-posta Aboneliği")
         email_input = st.text_input("E-posta Adresiniz:", placeholder="ornek@gmail.com", key="email_input_key")
@@ -250,25 +255,21 @@ def main():
                     if success: st.success(f"Başarılı! '{email}' adresine test e-postası gönderildi.")
                     else: st.error(f"Başarısız! Hata: {message}")
             else:
-                st.warning("Lütfen test e-postası göndermek için geçerli bir e-posta adresi girin.")
+                st.warning("Lütfen geçerli bir e-posta adresi girin.")
         
-        # Analiz sonuçları varsa Bildirim Durum Panelini göster
         if analysis_results:
             st.divider()
             st.header("📊 Bildirim Durumu")
             firsat_df = analysis_results["firsat_df"]
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
             subscribers = get_subscribers()
-            
             firsat_var_mi = bool(firsat_hisseleri_listesi)
             abone_var_mi = bool(subscribers)
             zaman_uygun_mu = now.time() >= UPDATE_TIME
-            
             st.metric("Potansiyel Fırsat Bulundu mu?", "Evet" if firsat_var_mi else "Hayır")
             st.metric("Kayıtlı Abone Var mı?", f"{len(subscribers)} kişi" if abone_var_mi else "Hayır")
             st.metric("Saat 19:00'dan Sonra mı?", "Evet" if zaman_uygun_mu else "Hayır")
 
-    # --- ANA İÇERİK ---
     if analysis_results:
         firsat_df = analysis_results["firsat_df"]
         tum_hisseler_df = analysis_results["tum_hisseler_df"]
@@ -276,33 +277,22 @@ def main():
         all_stock_data = analysis_results["all_stock_data"]
         
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
-        with tab1:
-            st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
-            st.dataframe(firsat_df)
-        with tab2:
-            st.header("Tüm Hisselerin Analizi")
-            st.dataframe(tum_hisseler_df)
-        with tab3:
-            st.header("Portföyümdeki Hisselerin Durumu")
-            st.dataframe(portfoy_df)
+        with tab1: st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)"); st.dataframe(firsat_df)
+        with tab2: st.header("Tüm Hisselerin Analizi"); st.dataframe(tum_hisseler_df)
+        with tab3: st.header("Portföyümdeki Hisselerin Durumu"); st.dataframe(portfoy_df)
         with tab4:
             st.header("Detaylı Hisse İnceleme")
             stock_list = sorted(all_stock_data.keys())
             selected_stock = st.selectbox("İncelemek istediğiniz hisseyi seçin:", stock_list)
             if selected_stock:
                 df_detail = all_stock_data[selected_stock]
-                st.subheader(f"{selected_stock} - Güncel Değerler")
-                st.dataframe(tum_hisseler_df[tum_hisseler_df['Hisse'] == selected_stock])
-                st.subheader(f"{selected_stock} - Fiyat Grafiği")
-                st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
-                st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
-                st.line_chart(df_detail.set_index('Tarih')['muhind'])
+                st.subheader(f"{selected_stock} - Güncel Değerler"); st.dataframe(tum_hisseler_df[tum_hisseler_df['Hisse'] == selected_stock])
+                st.subheader(f"{selected_stock} - Fiyat Grafiği"); st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
+                st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği"); st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
-        # E-posta gönderme mantığı
         if not check_if_email_sent(cache_key):
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
             subscribers = get_subscribers()
-
             if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
                 st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
                 email_body_html = f"<html><body><p>Günün Hisse Fırsatları:</p><ul>{''.join([f'<li><b>{s}</b></li>' for s in firsat_hisseleri_listesi])}</ul></body></html>"
