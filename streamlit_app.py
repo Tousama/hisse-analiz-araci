@@ -74,20 +74,16 @@ def remove_subscriber(email):
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
-# --- DÜZELTME: "Cannot hash argument 'sql'" hatasını çözen fonksiyon ---
 def check_if_email_sent(cache_key):
-    """Veritabanını kontrol ederek bu anahtar için e-posta gönderilip gönderilmediğini anlar."""
     try:
-        # Sorguyu 'text()' objesi yerine normal bir string olarak gönderiyoruz.
         query = "SELECT COUNT(*) FROM sent_emails WHERE cache_key = :cache_key"
         df = conn.query(query, params={"cache_key": cache_key}, show_spinner=False, ttl=0)
         return df.iloc[0, 0] > 0
     except Exception as e:
         st.sidebar.warning(f"Gönderilmiş e-posta kontrol edilemedi: {e}")
-        return True # Hata durumunda spam önlemek için gönderildi varsay
+        return True
 
 def log_email_sent(cache_key):
-    """E-posta gönderildikten sonra veritabanına kayıt düşer."""
     try:
         with conn.session as s:
             s.execute(text("INSERT INTO sent_emails (cache_key) VALUES (:cache_key);"), params={"cache_key": cache_key})
@@ -262,6 +258,7 @@ def main():
         all_stock_data = analysis_results["all_stock_data"]
         
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
+        # ... (Tab içerikleri öncekiyle aynı) ...
         with tab1:
             st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)")
             st.dataframe(firsat_df)
@@ -284,11 +281,24 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
                 st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
-        if not check_if_email_sent(cache_key):
+        # --- YENİ BİLDİRİM DURUM PANELİ ---
+        with st.sidebar:
+            st.divider()
+            st.header("📊 Bildirim Durumu")
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
             subscribers = get_subscribers()
-
-            if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
+            
+            firsat_var_mi = bool(firsat_hisseleri_listesi)
+            abone_var_mi = bool(subscribers)
+            zaman_uygun_mu = now.time() >= UPDATE_TIME
+            
+            st.metric("Potansiyel Fırsat Bulundu mu?", "Evet" if firsat_var_mi else "Hayır")
+            st.metric("Kayıtlı Abone Var mı?", f"{len(subscribers)} kişi" if abone_var_mi else "Hayır")
+            st.metric("Saat 19:00'dan Sonra mı?", "Evet" if zaman_uygun_mu else "Hayır")
+        
+        # E-posta gönderme mantığı
+        if not check_if_email_sent(cache_key):
+            if firsat_var_mi and abone_var_mi and zaman_uygun_mu:
                 st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
                 email_body_html = f"<html><body><p>Günün Hisse Fırsatları:</p><ul>{''.join([f'<li><b>{s}</b></li>' for s in firsat_hisseleri_listesi])}</ul></body></html>"
                 subject = "Günlük Hisse Fırsatları Raporu"
