@@ -38,7 +38,7 @@ except Exception as e:
     st.error(f"Veritabanı bağlantısı kurulamadı. 'Secrets' ayarlarınızı kontrol edin. Hata: {e}")
     st.stop()
     
-# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları (Yeniden Yazıldı ve Sağlamlaştırıldı) ---
+# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
@@ -48,22 +48,14 @@ def add_subscriber(email):
     clean_email = email.strip().lower()
     try:
         with conn.session as s:
-            # ON CONFLICT ile yinelenen kayıt hatasını veritabanı seviyesinde önle. Bu, en güvenli yöntemdir.
-            query = text("""
-                INSERT INTO subscribers (email) VALUES (:email)
-                ON CONFLICT (email) DO NOTHING;
-            """)
+            query = text("INSERT INTO subscribers (email) VALUES (:email) ON CONFLICT (email) DO NOTHING;")
             result = s.execute(query, params={"email": clean_email})
             s.commit()
-        
-        get_subscribers.clear() # Önbelleği temizle
-
-        # result.rowcount, etkilenen satır sayısını verir. 1 ise yeni kayıt, 0 ise zaten var demektir.
+        get_subscribers.clear()
         if result.rowcount > 0:
             st.success(f"{clean_email} abone listesine başarıyla eklendi!")
         else:
             st.warning("Bu e-posta adresi zaten listede.")
-            
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
@@ -71,18 +63,14 @@ def remove_subscriber(email):
     clean_email = email.strip().lower()
     try:
         with conn.session as s:
-            # Doğrudan silmeyi dene ve etkilenen satır sayısını kontrol et
             query = text("DELETE FROM subscribers WHERE email = :email;")
             result = s.execute(query, params={"email": clean_email})
             s.commit()
-
-        get_subscribers.clear() # Önbelleği temizle
-
+        get_subscribers.clear()
         if result.rowcount > 0:
             st.success(f"{clean_email} listeden başarıyla çıkarıldı.")
         else:
             st.warning("Bu e-posta adresi listede bulunamadı.")
-            
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
@@ -211,7 +199,7 @@ def run_full_analysis(_cache_key):
     firsat_df = generate_summary_df(all_stock_data, firsat_stocks)
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
-    st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
+    st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi! (Anahtar: {_cache_key})")
     
     return {"firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df, "portfoy_df": portfoy_df, "all_stock_data": all_stock_data}
 
@@ -262,6 +250,13 @@ def main():
             else:
                 st.warning("Lütfen geçerli bir e-posta adresi girin.")
         
+        # --- YENİ TEŞHİS PANELİ ---
+        st.divider()
+        st.header("⚙️ Uygulama Durumu")
+        st.write(f"**Sunucu Saati (TSİ):** {now.strftime('%H:%M:%S')}")
+        st.write(f"**Oluşturulan Önbellek Anahtarı:**")
+        st.code(cache_key)
+
         if analysis_results:
             st.divider()
             st.header("📊 Bildirim Durumu")
