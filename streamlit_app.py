@@ -74,6 +74,21 @@ def remove_subscriber(email):
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
+# --- YENİ FONKSİYON ---
+@st.cache_data(ttl=60, show_spinner=False)
+def get_last_email_sent_info():
+    """Son e-postanın ne zaman gönderildiğini veritabanından çeker."""
+    try:
+        query = "SELECT MAX(sent_at) as last_sent FROM sent_emails"
+        df = conn.query(query, show_spinner=False)
+        if not df.empty and pd.notna(df['last_sent'].iloc[0]):
+            last_sent_utc = df['last_sent'].iloc[0].replace(tzinfo=pytz.UTC)
+            return last_sent_utc.astimezone(TIMEZONE)
+        return None
+    except Exception as e:
+        print(f"Son e-posta zamanı çekilemedi: {e}")
+        return None
+
 def check_if_email_sent(cache_key):
     try:
         query = "SELECT COUNT(*) FROM sent_emails WHERE cache_key = :cache_key"
@@ -199,7 +214,7 @@ def run_full_analysis(_cache_key):
     firsat_df = generate_summary_df(all_stock_data, firsat_stocks)
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
-    st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi! (Anahtar: {_cache_key})")
+    st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
     
     return {"firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df, "portfoy_df": portfoy_df, "all_stock_data": all_stock_data}
 
@@ -211,6 +226,22 @@ def main():
     st.markdown("Bu araç, her gün **Türkiye saatiyle 19:00'dan** sonraki ilk ziyarette BİST verilerini otomatik olarak günceller.")
 
     now = datetime.now(TIMEZONE)
+    
+    # --- YENİ: Manuel Güncelleme Mantığı ---
+    if "manual_update" not in st.session_state:
+        st.session_state.manual_update = False
+        
+    def trigger_update():
+        st.session_state.manual_update = True
+    
+    with st.sidebar:
+        st.header("⚙️ Veri Kontrolü")
+        st.button("Verileri Şimdi Güncelle", on_click=trigger_update)
+
+    if st.session_state.manual_update:
+        run_full_analysis.clear()
+        st.session_state.manual_update = False # Bir sonraki çalıştırma için sıfırla
+
     cache_key = now.date().isoformat()
     if now.time() >= UPDATE_TIME:
         cache_key += "-aksam"
@@ -218,6 +249,7 @@ def main():
     analysis_results = run_full_analysis(cache_key)
 
     with st.sidebar:
+        st.divider()
         st.header("🔔 E-posta Aboneliği")
         email_input = st.text_input("E-posta Adresiniz:", placeholder="ornek@gmail.com", key="email_input_key")
 
@@ -248,27 +280,26 @@ def main():
                     if success: st.success(f"Başarılı! '{email}' adresine test e-postası gönderildi.")
                     else: st.error(f"Başarısız! Hata: {message}")
             else:
-                st.warning("Lütfen geçerli bir e-posta adresi girin.")
+                st.warning("Lütfen test e-postası göndermek için geçerli bir e-posta adresi girin.")
         
-        # --- YENİ TEŞHİS PANELİ ---
-        st.divider()
-        st.header("⚙️ Uygulama Durumu")
-        st.write(f"**Sunucu Saati (TSİ):** {now.strftime('%H:%M:%S')}")
-        st.write(f"**Oluşturulan Önbellek Anahtarı:**")
-        st.code(cache_key)
-
         if analysis_results:
             st.divider()
-            st.header("📊 Bildirim Durumu")
+            st.header("📊 Uygulama Durumu")
             firsat_df = analysis_results["firsat_df"]
             firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
             subscribers = get_subscribers()
-            firsat_var_mi = bool(firsat_hisseleri_listesi)
-            abone_var_mi = bool(subscribers)
-            zaman_uygun_mu = now.time() >= UPDATE_TIME
-            st.metric("Potansiyel Fırsat Bulundu mu?", "Evet" if firsat_var_mi else "Hayır")
-            st.metric("Kayıtlı Abone Var mı?", f"{len(subscribers)} kişi" if abone_var_mi else "Hayır")
-            st.metric("Saat 19:00'dan Sonra mı?", "Evet" if zaman_uygun_mu else "Hayır")
+            
+            st.write(f"**Sunucu Saati (TSİ):** {now.strftime('%H:%M:%S')}")
+            
+            last_sent_time = get_last_email_sent_info()
+            st.write(f"**Son Bildirim Gönderimi:**")
+            st.code(last_sent_time.strftime('%d-%m-%Y %H:%M:%S') if last_sent_time else "Henüz Yok")
+            
+            next_update_time = now.replace(hour=19, minute=0, second=0, microsecond=0)
+            if now.time() >= UPDATE_TIME:
+                next_update_time += timedelta(days=1)
+            st.write(f"**Sonraki Otomatik Güncelleme:**")
+            st.code(next_update_time.strftime('%d-%m-%Y %H:%M:%S'))
 
     if analysis_results:
         firsat_df = analysis_results["firsat_df"]
