@@ -22,7 +22,7 @@ CONFIG = {
     "start_date": "20200101000000",
     "end_date": "20251231235959",
     "headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.0 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/5.0"},
-    "max_data_rows": 4108, "ema_period": 200, "rsi_period": 14, "muhind_filter_value": 0.9,
+    "max_data_rows": 4108, "ema_period": 200, "rsi_period": 14, "muhind_filter_value": 0.9, # Bu e-posta için varsayılan
     "portfolio": ["MHRGY", "RTALB", "ALKA", "KLSER", "EUREN", "DOAS", "CVKMD", "IHAAS", "IZENR"],
     "concurrent_requests": 10, "request_delay": 0.1
 }
@@ -74,10 +74,8 @@ def remove_subscriber(email):
     except Exception as e:
         st.error(f"Veritabanı hatası: {e}")
 
-# --- YENİ FONKSİYON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_last_email_sent_info():
-    """Son e-postanın ne zaman gönderildiğini veritabanından çeker."""
     try:
         query = "SELECT MAX(sent_at) as last_sent FROM sent_emails"
         df = conn.query(query, show_spinner=False)
@@ -103,6 +101,7 @@ def log_email_sent(cache_key):
         with conn.session as s:
             s.execute(text("INSERT INTO sent_emails (cache_key) VALUES (:cache_key);"), params={"cache_key": cache_key})
             s.commit()
+        get_last_email_sent_info.clear()
     except Exception as e:
         st.sidebar.error(f"E-posta gönderim kaydı yapılamadı: {e}")
 
@@ -210,9 +209,9 @@ def run_full_analysis(_cache_key):
             df = calculate_indicators(df)
             all_stock_data[stock_code] = df
     
-    firsat_stocks = [ stock for stock, df in all_stock_data.items() if not df.empty and "muhind" in df.columns and df.iloc[-1]["muhind"] < CONFIG["muhind_filter_value"] ]
-    firsat_df = generate_summary_df(all_stock_data, firsat_stocks)
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
+    # E-posta için varsayılan filtrelemeyi burada yap
+    firsat_df = tum_hisseler_df[tum_hisseler_df['Muhind'] < CONFIG["muhind_filter_value"]]
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
     st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
     
@@ -227,20 +226,20 @@ def main():
 
     now = datetime.now(TIMEZONE)
     
-    # --- YENİ: Manuel Güncelleme Mantığı ---
-    if "manual_update" not in st.session_state:
-        st.session_state.manual_update = False
-        
-    def trigger_update():
-        st.session_state.manual_update = True
-    
     with st.sidebar:
         st.header("⚙️ Veri Kontrolü")
-        st.button("Verileri Şimdi Güncelle", on_click=trigger_update)
+        if st.button("Manuel Önbellek Temizle"):
+            st.cache_data.clear()
+            st.success("Önbellek temizlendi! Sayfayı yenileyin.")
+            st.stop()
+        
+        st.divider()
+        # --- YENİ: İnteraktif Filtre Paneli ---
+        st.header("🔍 Fırsat Filtreleri")
+        muhind_max = st.slider("Maksimum Muhind Değeri:", 0.5, 2.0, 0.9, 0.05)
+        rsi_max = st.slider("Maksimum RSI Değeri:", 1, 100, 30, 1)
+        p_ema_max = st.slider("Maksimum Fiyat/EMA200 Oranı:", 0.5, 2.0, 0.75, 0.05)
 
-    if st.session_state.manual_update:
-        run_full_analysis.clear()
-        st.session_state.manual_update = False # Bir sonraki çalıştırma için sıfırla
 
     cache_key = now.date().isoformat()
     if now.time() >= UPDATE_TIME:
@@ -285,30 +284,33 @@ def main():
         if analysis_results:
             st.divider()
             st.header("📊 Uygulama Durumu")
-            firsat_df = analysis_results["firsat_df"]
-            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
-            subscribers = get_subscribers()
-            
+            # ... (Uygulama Durumu paneli öncekiyle aynı) ...
             st.write(f"**Sunucu Saati (TSİ):** {now.strftime('%H:%M:%S')}")
-            
+            st.write(f"**Önbellek Anahtarı:**")
+            st.code(cache_key)
             last_sent_time = get_last_email_sent_info()
-            st.write(f"**Son Bildirim Gönderimi:**")
-            st.code(last_sent_time.strftime('%d-%m-%Y %H:%M:%S') if last_sent_time else "Henüz Yok")
-            
-            next_update_time = now.replace(hour=19, minute=0, second=0, microsecond=0)
-            if now.time() >= UPDATE_TIME:
-                next_update_time += timedelta(days=1)
-            st.write(f"**Sonraki Otomatik Güncelleme:**")
-            st.code(next_update_time.strftime('%d-%m-%Y %H:%M:%S'))
+            st.write(f"**Son Bildirim:**")
+            st.code(last_sent_time.strftime('%d-%m-%Y %H:%M') if last_sent_time else "Henüz Yok")
+
 
     if analysis_results:
-        firsat_df = analysis_results["firsat_df"]
+        firsat_df_default = analysis_results["firsat_df"]
         tum_hisseler_df = analysis_results["tum_hisseler_df"]
         portfoy_df = analysis_results["portfoy_df"]
         all_stock_data = analysis_results["all_stock_data"]
         
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Potansiyel Fırsatlar", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
-        with tab1: st.header("Potansiyel Fırsatlar (`Muhind < 0.9`)"); st.dataframe(firsat_df)
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 İnteraktif Fırsat Tarama", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
+        with tab1:
+            st.header("İnteraktif Fırsat Tarama")
+            
+            # --- YENİ: Dinamik Filtreleme ---
+            filtered_df = tum_hisseler_df[
+                (tum_hisseler_df['Muhind'] <= muhind_max) &
+                (tum_hisseler_df['Rsi'] <= rsi_max) &
+                (tum_hisseler_df['P/Ema200'] <= p_ema_max)
+            ]
+            st.dataframe(filtered_df)
+
         with tab2: st.header("Tüm Hisselerin Analizi"); st.dataframe(tum_hisseler_df)
         with tab3: st.header("Portföyümdeki Hisselerin Durumu"); st.dataframe(portfoy_df)
         with tab4:
@@ -322,7 +324,7 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği"); st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
         if not check_if_email_sent(cache_key):
-            firsat_hisseleri_listesi = firsat_df['Hisse'].tolist() if not firsat_df.empty else []
+            firsat_hisseleri_listesi = firsat_df_default['Hisse'].tolist() if not firsat_df_default.empty else []
             subscribers = get_subscribers()
             if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
                 st.sidebar.info(f"{len(subscribers)} aboneye e-posta gönderiliyor...")
