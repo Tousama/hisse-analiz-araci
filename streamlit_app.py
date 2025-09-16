@@ -22,7 +22,7 @@ CONFIG = {
     "start_date": "20200101000000",
     "end_date": "20251231235959",
     "headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.0 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/5.0"},
-    "max_data_rows": 4108, "ema_period": 200, "rsi_period": 14, "muhind_filter_value": 0.9, # Bu e-posta için varsayılan
+    "max_data_rows": 4108, "ema_period": 200, "rsi_period": 14, "muhind_filter_value": 0.9,
     "portfolio": ["MHRGY", "RTALB", "ALKA", "KLSER", "EUREN", "DOAS", "CVKMD", "IHAAS", "IZENR"],
     "concurrent_requests": 10, "request_delay": 0.1
 }
@@ -210,7 +210,6 @@ def run_full_analysis(_cache_key):
             all_stock_data[stock_code] = df
     
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
-    # E-posta için varsayılan filtrelemeyi burada yap
     firsat_df = tum_hisseler_df[tum_hisseler_df['Muhind'] < CONFIG["muhind_filter_value"]]
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
     st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
@@ -228,13 +227,12 @@ def main():
     
     with st.sidebar:
         st.header("⚙️ Veri Kontrolü")
-        if st.button("Manuel Önbellek Temizle"):
+        # --- YENİ: Geliştirilmiş Manuel Güncelleme Butonu ---
+        if st.button("🔄 Verileri Yeniden Yükle"):
             st.cache_data.clear()
-            st.success("Önbellek temizlendi! Sayfayı yenileyin.")
-            st.stop()
-        
+            st.rerun()
+
         st.divider()
-        # --- YENİ: İnteraktif Filtre Paneli ---
         st.header("🔍 Fırsat Filtreleri")
         muhind_max = st.slider("Maksimum Muhind Değeri:", 0.5, 2.0, 0.9, 0.05)
         rsi_max = st.slider("Maksimum RSI Değeri:", 1, 100, 30, 1)
@@ -284,7 +282,6 @@ def main():
         if analysis_results:
             st.divider()
             st.header("📊 Uygulama Durumu")
-            # ... (Uygulama Durumu paneli öncekiyle aynı) ...
             st.write(f"**Sunucu Saati (TSİ):** {now.strftime('%H:%M:%S')}")
             st.write(f"**Önbellek Anahtarı:**")
             st.code(cache_key)
@@ -292,9 +289,7 @@ def main():
             st.write(f"**Son Bildirim:**")
             st.code(last_sent_time.strftime('%d-%m-%Y %H:%M') if last_sent_time else "Henüz Yok")
 
-
     if analysis_results:
-        firsat_df_default = analysis_results["firsat_df"]
         tum_hisseler_df = analysis_results["tum_hisseler_df"]
         portfoy_df = analysis_results["portfoy_df"]
         all_stock_data = analysis_results["all_stock_data"]
@@ -302,8 +297,6 @@ def main():
         tab1, tab2, tab3, tab4 = st.tabs(["📊 İnteraktif Fırsat Tarama", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
         with tab1:
             st.header("İnteraktif Fırsat Tarama")
-            
-            # --- YENİ: Dinamik Filtreleme ---
             filtered_df = tum_hisseler_df[
                 (tum_hisseler_df['Muhind'] <= muhind_max) &
                 (tum_hisseler_df['Rsi'] <= rsi_max) &
@@ -324,6 +317,7 @@ def main():
                 st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği"); st.line_chart(df_detail.set_index('Tarih')['muhind'])
 
         if not check_if_email_sent(cache_key):
+            firsat_df_default = analysis_results["firsat_df"]
             firsat_hisseleri_listesi = firsat_df_default['Hisse'].tolist() if not firsat_df_default.empty else []
             subscribers = get_subscribers()
             if firsat_hisseleri_listesi and subscribers and now.time() >= UPDATE_TIME:
