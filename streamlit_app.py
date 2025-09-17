@@ -38,7 +38,7 @@ except Exception as e:
     st.error(f"Veritabanı bağlantısı kurulamadı. 'Secrets' ayarlarınızı kontrol edin. Hata: {e}")
     st.stop()
     
-# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları ---
+# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları (Yeniden Yazıldı ve Sağlamlaştırıldı) ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
     df = conn.query('SELECT email FROM subscribers', show_spinner=False)
@@ -128,14 +128,18 @@ def send_email(recipient_email, subject, html_body):
 # --- VERİ İŞLEME FONKSİYONLARI ---
 def fetch_stock_tickers(url, headers):
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         table_rows = soup.find("div", {"class": "single-table"}).tbody.findAll("tr")
         return [row.a.text.strip() for row in table_rows]
-    except requests.exceptions.RequestException as e:
-        st.error(f"Hisse senedi listesi çekilirken hata oluştu: {e}")
+    except requests.exceptions.ConnectTimeout:
+        st.error("Hisse senedi listesi çekilirken sunucuya bağlanılamadı (Timeout). Sunucu, bu uygulamadan gelen istekleri engelliyor olabilir. Lütfen daha sonra 'Verileri Yeniden Yükle' butonu ile tekrar deneyin.")
         return []
+    except requests.exceptions.RequestException as e:
+        st.error(f"Hisse senedi listesi çekilirken bir ağ hatası oluştu: {e}")
+        return []
+
 async def fetch_stock_data(session, stock_code, semaphore):
     url = CONFIG["data_url_template"].format(from_date=CONFIG["start_date"], to_date=CONFIG["end_date"], stock_code=stock_code)
     async with semaphore:
@@ -227,7 +231,6 @@ def main():
     
     with st.sidebar:
         st.header("⚙️ Veri Kontrolü")
-        # --- YENİ: Geliştirilmiş Manuel Güncelleme Butonu ---
         if st.button("🔄 Verileri Yeniden Yükle"):
             st.cache_data.clear()
             st.rerun()
