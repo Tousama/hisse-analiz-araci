@@ -20,10 +20,10 @@ CONFIG = {
     "isyatirim_url": "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx",
     "data_url_template": "https://www.isyatirim.com.tr/_Layouts/15/IsYatirim.Website/Common/ChartData.aspx/IndexHistoricalAll?period=1440&from={from_date}&to={to_date}&endeks={stock_code}",
     "start_date": "20200101000000",
-    "end_date": "20251231235959",
+    "end_date": "20261231235959",
     "headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.0 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/5.0"},
     "max_data_rows": 4108, "ema_period": 200, "rsi_period": 14, "muhind_filter_value": 0.9,
-    "portfolio": ["MHRGY", "RTALB", "ALKA", "KLSER", "EUREN", "DOAS", "CVKMD", "IHAAS", "IZENR"],
+    "portfolio": ["ESCAR", "BEGYO", "ESEN", "BORLS"],
     "concurrent_requests": 10, "request_delay": 0.1
 }
 
@@ -338,4 +338,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
