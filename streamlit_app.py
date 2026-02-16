@@ -14,6 +14,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import pytz
 from sqlalchemy.sql import text
+import urllib3
+
+# SSL uyarılarını kapat
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Konfigürasyon ---
 CONFIG = {
@@ -21,10 +25,16 @@ CONFIG = {
     "data_url_template": "https://www.isyatirim.com.tr/_Layouts/15/IsYatirim.Website/Common/ChartData.aspx/IndexHistoricalAll?period=1440&from={from_date}&to={to_date}&endeks={stock_code}",
     "start_date": "20200101000000",
     "end_date": "20261231235959",
-    "headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.0 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/5.0"},
-    "max_data_rows": 4108, "ema_period": 200, "rsi_period": 14, "muhind_filter_value": 0.9,
+    "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.0 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/5.0"
+    },
+    "max_data_rows": 4108, 
+    "ema_period": 200, 
+    "rsi_period": 14, 
+    "muhind_filter_value": 0.9,
     "portfolio": ["ESCAR", "BEGYO", "ESEN", "BORLS"],
-    "concurrent_requests": 10, "request_delay": 0.1
+    "concurrent_requests": 10, 
+    "request_delay": 0.1
 }
 
 # --- Ayarlar ---
@@ -38,11 +48,14 @@ except Exception as e:
     st.error(f"Veritabanı bağlantısı kurulamadı. 'Secrets' ayarlarınızı kontrol edin. Hata: {e}")
     st.stop()
     
-# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları (Yeniden Yazıldı ve Sağlamlaştırıldı) ---
+# --- Abone ve E-posta Kayıt Yönetimi Fonksiyonları ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_subscribers():
-    df = conn.query('SELECT email FROM subscribers', show_spinner=False)
-    return df['email'].tolist()
+    try:
+        df = conn.query('SELECT email FROM subscribers', show_spinner=False)
+        return df['email'].tolist()
+    except Exception:
+        return []
 
 def add_subscriber(email):
     clean_email = email.strip().lower()
@@ -128,39 +141,55 @@ def send_email(recipient_email, subject, html_body):
 # --- VERİ İŞLEME FONKSİYONLARI ---
 def fetch_stock_tickers(url, headers):
     try:
+        # SSL doğrulamasını devre dışı bırakmak için verify=False eklendi
         response = requests.get(url, headers=headers, timeout=15, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         table_rows = soup.find("div", {"class": "single-table"}).tbody.findAll("tr")
         return [row.a.text.strip() for row in table_rows]
     except requests.exceptions.ConnectTimeout:
-        st.error("Hisse senedi listesi çekilirken sunucuya bağlanılamadı (Timeout). Sunucu, bu uygulamadan gelen istekleri engelliyor olabilir. Lütfen daha sonra 'Verileri Yeniden Yükle' butonu ile tekrar deneyin.")
+        st.error("Hisse senedi listesi çekilirken sunucuya bağlanılamadı (Timeout).")
         return []
     except requests.exceptions.RequestException as e:
         st.error(f"Hisse senedi listesi çekilirken bir ağ hatası oluştu: {e}")
+        return []
+    except Exception as e:
+        st.error(f"Beklenmeyen bir hata oluştu: {e}")
         return []
 
 async def fetch_stock_data(session, stock_code, semaphore):
     url = CONFIG["data_url_template"].format(from_date=CONFIG["start_date"], to_date=CONFIG["end_date"], stock_code=stock_code)
     async with semaphore:
         try:
-            async with session.get(url) as response:
+            # SSL context oluşturup sertifika kontrolünü kapatıyoruz (aiohttp için)
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            async with session.get(url, ssl=ssl_context) as response:
                 response.raise_for_status()
                 data = await response.json()
                 await asyncio.sleep(CONFIG["request_delay"])
                 return stock_code, data.get("data", [])
         except Exception:
             return stock_code, None
+
 def process_raw_data(raw_data):
     if not raw_data: return pd.DataFrame()
-    dates = pd.to_datetime([item[0] for item in raw_data], unit='ms')
-    prices = [item[1] for item in raw_data]
-    return pd.DataFrame({"Tarih": dates, "Fiyat": prices})
+    try:
+        dates = pd.to_datetime([item[0] for item in raw_data], unit='ms')
+        prices = [item[1] for item in raw_data]
+        return pd.DataFrame({"Tarih": dates, "Fiyat": prices})
+    except Exception:
+        return pd.DataFrame()
+
 def clean_data(df):
+    if df.empty: return df
     if len(df) > CONFIG["max_data_rows"]:
         df = df.iloc[-CONFIG["max_data_rows"]:].reset_index(drop=True)
     df['Fiyat'] = df['Fiyat'].replace(0, np.nan).replace(0.0001, np.nan).ffill().bfill()
     return df
+
 def calculate_indicators(df):
     if 'Fiyat' not in df.columns or df['Fiyat'].isnull().all() or len(df) < CONFIG["ema_period"]:
         return df
@@ -171,6 +200,8 @@ def calculate_indicators(df):
     df["muhind"] = df["p/ema200"] / df["ema200ort"]
     df['Degisim'] = round((df['Fiyat'] / df['Fiyat'].shift(1) - 1) * 100, 2)
     return df
+
+# !!! EKSİK OLAN FONKSİYON BURADA !!!
 def generate_summary_df(stock_data_dict, stock_list):
     summary_data = []
     for stock in stock_list:
@@ -178,14 +209,25 @@ def generate_summary_df(stock_data_dict, stock_list):
             df = stock_data_dict[stock]
             last_row = df.iloc[-1]
             lookback_period = min(240, len(df))
-            summary_data.append({"Hisse": stock, "Fiyat": last_row.get("Fiyat"), "Degisim": last_row.get("Degisim"), "Rsi": last_row.get("rsi"), "Ema200": last_row.get("ema200"), "P/Ema200": last_row.get("p/ema200"), "Ema200Ort": last_row.get("ema200ort"), "Muhind": last_row.get("muhind"), "LowestMuhind": df['muhind'].iloc[-lookback_period:].min(), "HighestMuhind": df['muhind'].iloc[-lookback_period:].max()})
+            summary_data.append({
+                "Hisse": stock, 
+                "Fiyat": last_row.get("Fiyat"), 
+                "Degisim": last_row.get("Degisim"), 
+                "Rsi": last_row.get("rsi"), 
+                "Ema200": last_row.get("ema200"), 
+                "P/Ema200": last_row.get("p/ema200"), 
+                "Ema200Ort": last_row.get("ema200ort"), 
+                "Muhind": last_row.get("muhind"), 
+                "LowestMuhind": df['muhind'].iloc[-lookback_period:].min(), 
+                "HighestMuhind": df['muhind'].iloc[-lookback_period:].max()
+            })
     return pd.DataFrame(summary_data)
 
 @st.cache_data(show_spinner=False)
 def run_full_analysis(_cache_key):
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
     
-    # EĞER HİSSE LİSTESİ ÇEKİLEMEZSE ÇÖKMEYİ ENGELLE
+    # Liste boşsa güvenli çıkış yap
     if not stock_tickers: 
         return {
             "firsat_df": pd.DataFrame(), 
@@ -194,11 +236,43 @@ def run_full_analysis(_cache_key):
             "all_stock_data": {}
         }
     
-    # ... (kodun geri kalan veri çekme kısımları aynı kalıyor) ...
+    all_stock_data = {}
+    progress_bar_container = st.empty()
+    
+    async def run_fetch():
+        timeout = aiohttp.ClientTimeout(total=60)
+        semaphore = asyncio.Semaphore(CONFIG["concurrent_requests"])
+        
+        # Aiohttp için de SSL kontrolünü kapatalım
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
 
+        async with aiohttp.ClientSession(headers=CONFIG["headers"], timeout=timeout, connector=connector) as session:
+            tasks = [asyncio.ensure_future(fetch_stock_data(session, stock, semaphore)) for stock in stock_tickers]
+            results = []
+            total_stocks, processed_stocks = len(stock_tickers), 0
+            for f in asyncio.as_completed(tasks):
+                result = await f
+                results.append(result)
+                processed_stocks += 1
+                progress_bar_container.progress(processed_stocks / total_stocks, text=f"Piyasa verileri çekiliyor... ({processed_stocks}/{total_stocks})")
+            return results
+
+    results = asyncio.run(run_fetch())
+    progress_bar_container.empty()
+    
+    for stock_code, raw_data in results:
+        if raw_data:
+            df = process_raw_data(raw_data)
+            df = clean_data(df)
+            df = calculate_indicators(df)
+            all_stock_data[stock_code] = df
+    
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
     
-    # SÜTUN KONTROLÜ EKLEYİN (Hatanın asıl çözümü)
+    # KEYERROR ÇÖZÜMÜ: Sütun kontrolü
     if not tum_hisseler_df.empty and 'Muhind' in tum_hisseler_df.columns:
         firsat_df = tum_hisseler_df[tum_hisseler_df['Muhind'] < CONFIG["muhind_filter_value"]]
     else:
@@ -206,11 +280,10 @@ def run_full_analysis(_cache_key):
         
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
     
-    # Eğer veri yoksa başarı mesajı yerine uyarı ver
     if tum_hisseler_df.empty:
-        st.warning("Hiçbir hisse senedi verisi işlenemedi.")
+        st.warning("Veriler çekilemedi veya işlenemedi. Lütfen internet bağlantınızı kontrol edip 'Verileri Yeniden Yükle' butonunu kullanın.")
     else:
-        st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} itibarıyla güncellendi!")
+        st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
     
     return {"firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df, "portfoy_df": portfoy_df, "all_stock_data": all_stock_data}
 
@@ -292,9 +365,9 @@ def main():
         all_stock_data = analysis_results["all_stock_data"]
         
         tab1, tab2, tab3, tab4 = st.tabs(["📊 İnteraktif Fırsat Tarama", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
-        # Tab 1 içinde (Satır 287 civarı)
         with tab1:
             st.header("İnteraktif Fırsat Tarama")
+            # GÜVENLİ GÖRÜNTÜLEME KONTROLÜ
             if not tum_hisseler_df.empty and 'Muhind' in tum_hisseler_df.columns:
                 filtered_df = tum_hisseler_df[
                     (tum_hisseler_df['Muhind'] <= muhind_max) &
@@ -303,19 +376,34 @@ def main():
                 ]
                 st.dataframe(filtered_df)
             else:
-                st.info("Filtrelenecek veri bulunamadı.")
+                st.info("Filtrelenecek veri bulunamadı. Lütfen verileri yenileyin.")
 
-        with tab2: st.header("Tüm Hisselerin Analizi"); st.dataframe(tum_hisseler_df)
-        with tab3: st.header("Portföyümdeki Hisselerin Durumu"); st.dataframe(portfoy_df)
+        with tab2: 
+            st.header("Tüm Hisselerin Analizi")
+            st.dataframe(tum_hisseler_df)
+        with tab3: 
+            st.header("Portföyümdeki Hisselerin Durumu")
+            st.dataframe(portfoy_df)
         with tab4:
             st.header("Detaylı Hisse İnceleme")
-            stock_list = sorted(all_stock_data.keys())
-            selected_stock = st.selectbox("İncelemek istediğiniz hisseyi seçin:", stock_list)
-            if selected_stock:
-                df_detail = all_stock_data[selected_stock]
-                st.subheader(f"{selected_stock} - Güncel Değerler"); st.dataframe(tum_hisseler_df[tum_hisseler_df['Hisse'] == selected_stock])
-                st.subheader(f"{selected_stock} - Fiyat Grafiği"); st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
-                st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği"); st.line_chart(df_detail.set_index('Tarih')['muhind'])
+            if all_stock_data:
+                stock_list = sorted(all_stock_data.keys())
+                selected_stock = st.selectbox("İncelemek istediğiniz hisseyi seçin:", stock_list)
+                if selected_stock:
+                    df_detail = all_stock_data[selected_stock]
+                    # Hata almamak için sütun kontrolü
+                    if not tum_hisseler_df.empty and 'Hisse' in tum_hisseler_df.columns:
+                         st.subheader(f"{selected_stock} - Güncel Değerler")
+                         st.dataframe(tum_hisseler_df[tum_hisseler_df['Hisse'] == selected_stock])
+                    
+                    st.subheader(f"{selected_stock} - Fiyat Grafiği")
+                    st.line_chart(df_detail.set_index('Tarih')['Fiyat'])
+                    
+                    if 'muhind' in df_detail.columns:
+                        st.subheader(f"{selected_stock} - Muhind İndikatör Grafiği")
+                        st.line_chart(df_detail.set_index('Tarih')['muhind'])
+            else:
+                st.info("Detay verileri yüklenemedi.")
 
         if not check_if_email_sent(cache_key):
             firsat_df_default = analysis_results["firsat_df"]
@@ -336,7 +424,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
