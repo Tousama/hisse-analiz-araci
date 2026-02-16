@@ -184,39 +184,33 @@ def generate_summary_df(stock_data_dict, stock_list):
 @st.cache_data(show_spinner=False)
 def run_full_analysis(_cache_key):
     stock_tickers = fetch_stock_tickers(CONFIG["isyatirim_url"], CONFIG["headers"])
-    if not stock_tickers: return None
-    all_stock_data = {}
     
-    progress_bar_container = st.empty()
+    # EĞER HİSSE LİSTESİ ÇEKİLEMEZSE ÇÖKMEYİ ENGELLE
+    if not stock_tickers: 
+        return {
+            "firsat_df": pd.DataFrame(), 
+            "tum_hisseler_df": pd.DataFrame(), 
+            "portfoy_df": pd.DataFrame(), 
+            "all_stock_data": {}
+        }
     
-    async def run_fetch():
-        timeout = aiohttp.ClientTimeout(total=60)
-        semaphore = asyncio.Semaphore(CONFIG["concurrent_requests"])
-        async with aiohttp.ClientSession(headers=CONFIG["headers"], timeout=timeout) as session:
-            tasks = [asyncio.ensure_future(fetch_stock_data(session, stock, semaphore)) for stock in stock_tickers]
-            results = []
-            total_stocks, processed_stocks = len(stock_tickers), 0
-            for f in asyncio.as_completed(tasks):
-                result = await f
-                results.append(result)
-                processed_stocks += 1
-                progress_bar_container.progress(processed_stocks / total_stocks, text=f"Piyasa verileri çekiliyor... ({processed_stocks}/{total_stocks})")
-            return results
+    # ... (kodun geri kalan veri çekme kısımları aynı kalıyor) ...
 
-    results = asyncio.run(run_fetch())
-    progress_bar_container.empty()
-    
-    for stock_code, raw_data in results:
-        if raw_data:
-            df = process_raw_data(raw_data)
-            df = clean_data(df)
-            df = calculate_indicators(df)
-            all_stock_data[stock_code] = df
-    
     tum_hisseler_df = generate_summary_df(all_stock_data, stock_tickers)
-    firsat_df = tum_hisseler_df[tum_hisseler_df['Muhind'] < CONFIG["muhind_filter_value"]]
+    
+    # SÜTUN KONTROLÜ EKLEYİN (Hatanın asıl çözümü)
+    if not tum_hisseler_df.empty and 'Muhind' in tum_hisseler_df.columns:
+        firsat_df = tum_hisseler_df[tum_hisseler_df['Muhind'] < CONFIG["muhind_filter_value"]]
+    else:
+        firsat_df = pd.DataFrame()
+        
     portfoy_df = generate_summary_df(all_stock_data, CONFIG["portfolio"])
-    st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} (TSİ) itibarıyla başarıyla güncellendi!")
+    
+    # Eğer veri yoksa başarı mesajı yerine uyarı ver
+    if tum_hisseler_df.empty:
+        st.warning("Hiçbir hisse senedi verisi işlenemedi.")
+    else:
+        st.success(f"Veriler {datetime.now(TIMEZONE).strftime('%d-%m-%Y %H:%M:%S')} itibarıyla güncellendi!")
     
     return {"firsat_df": firsat_df, "tum_hisseler_df": tum_hisseler_df, "portfoy_df": portfoy_df, "all_stock_data": all_stock_data}
 
@@ -298,14 +292,18 @@ def main():
         all_stock_data = analysis_results["all_stock_data"]
         
         tab1, tab2, tab3, tab4 = st.tabs(["📊 İnteraktif Fırsat Tarama", "🗂️ Tüm Hisseler", "💼 Portföyüm", "🔍 Hisse Detay"])
+        # Tab 1 içinde (Satır 287 civarı)
         with tab1:
             st.header("İnteraktif Fırsat Tarama")
-            filtered_df = tum_hisseler_df[
-                (tum_hisseler_df['Muhind'] <= muhind_max) &
-                (tum_hisseler_df['Rsi'] <= rsi_max) &
-                (tum_hisseler_df['P/Ema200'] <= p_ema_max)
-            ]
-            st.dataframe(filtered_df)
+            if not tum_hisseler_df.empty and 'Muhind' in tum_hisseler_df.columns:
+                filtered_df = tum_hisseler_df[
+                    (tum_hisseler_df['Muhind'] <= muhind_max) &
+                    (tum_hisseler_df['Rsi'] <= rsi_max) &
+                    (tum_hisseler_df['P/Ema200'] <= p_ema_max)
+                ]
+                st.dataframe(filtered_df)
+            else:
+                st.info("Filtrelenecek veri bulunamadı.")
 
         with tab2: st.header("Tüm Hisselerin Analizi"); st.dataframe(tum_hisseler_df)
         with tab3: st.header("Portföyümdeki Hisselerin Durumu"); st.dataframe(portfoy_df)
@@ -338,6 +336,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
