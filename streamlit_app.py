@@ -128,7 +128,7 @@ def send_email(recipient_email, subject, html_body):
 # --- VERİ İŞLEME FONKSİYONLARI ---
 def fetch_stock_tickers(url, headers):
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=15, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         table_rows = soup.find("div", {"class": "single-table"}).tbody.findAll("tr")
@@ -338,5 +338,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
